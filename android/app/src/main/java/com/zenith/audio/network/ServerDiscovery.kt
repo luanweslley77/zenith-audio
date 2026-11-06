@@ -70,8 +70,8 @@ class ServerDiscovery(private val context: Context) {
                 val serverMap = mutableMapOf<String, Pair<ZapProtocol.DiscoveredServer, Long>>()
 
                 while (isActive) {
-                    val broadcastTargets = getBroadcastTargets()
-                    for (target in broadcastTargets) {
+                    val discoveryTargets = getDiscoveryTargets()
+                    for (target in discoveryTargets) {
                         try {
                             val probePacket = DatagramPacket(probeData, probeData.size, target, DISCOVERY_PORT)
                             socket.send(probePacket)
@@ -143,12 +143,36 @@ class ServerDiscovery(private val context: Context) {
         discoveryJob = null
     }
 
-    private fun getBroadcastTargets(): Set<InetAddress> {
+    private fun getDiscoveryTargets(): Set<InetAddress> {
         val targets = mutableSetOf<InetAddress>()
         try {
             // 1. Global broadcast fallback
             targets.add(InetAddress.getByName("255.255.255.255"))
         } catch (_: Exception) {}
+
+        try {
+            // 1b. Unicast to every server address used before. Broadcast does
+            // not cross point-to-point VPNs such as WireGuard, so these probes
+            // are what keep discovery working when the phone is on a VPN.
+            // Keeping the LAN and VPN addresses means switching networks does
+            // not require typing the address again.
+            val prefs = context.getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
+            val candidates = mutableSetOf<String>()
+            prefs.getStringSet("known_server_ips", emptySet())?.let { candidates.addAll(it) }
+            prefs.getString("server_ip", null)?.let { candidates.add(it) }
+
+            for (candidate in candidates) {
+                if (candidate.isNotBlank()) {
+                    try {
+                        targets.add(InetAddress.getByName(candidate.trim()))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Invalid saved server address $candidate: ${e.message}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to add saved server IPs to discovery targets: ${e.message}")
+        }
 
         try {
             // 2. Discover all local subnet broadcasts across Wi-Fi, Ethernet, and USB

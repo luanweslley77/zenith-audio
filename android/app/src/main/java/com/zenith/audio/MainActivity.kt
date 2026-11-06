@@ -225,7 +225,18 @@ class MainActivity : ComponentActivity() {
                         isAoaEnabled = isAoaEnabledState.value,
                         isUsbConnected = isUsbConnectedState.value,
                         onConnect = { ip, bitrate ->
-                            prefs.edit().putString("server_ip", ip).apply()
+                            // Keep every address already used (LAN and VPN), so
+                            // discovery can probe both after a network switch.
+                            // commit() instead of apply(): the user may close the
+                            // app right after connecting, and the address must
+                            // survive the next launch.
+                            val knownIps = prefs.getStringSet("known_server_ips", emptySet())
+                                ?.toMutableSet() ?: mutableSetOf()
+                            knownIps.add(ip)
+                            prefs.edit()
+                                .putString("server_ip", ip)
+                                .putStringSet("known_server_ips", knownIps)
+                                .commit()
                             startStreamingService(ip, bitrate)
                         },
                         onDisconnect = {
@@ -383,12 +394,16 @@ fun ZenithAudioScreen(
     onToggleMic: (Boolean) -> Unit
 ) {
     var serverIp by remember { mutableStateOf(initialIp) }
+    var hasUserEditedIp by remember { mutableStateOf(false) }
     var selectedBitrate by remember { mutableIntStateOf(320) }
     var isAutoBitrate by remember { mutableStateOf(false) }
     var volumeSlider by remember { mutableFloatStateOf(100f) }
 
     LaunchedEffect(activeDetectedIp) {
-        if (activeDetectedIp.isNotBlank()) {
+        // Fill the field automatically only when there is no saved address yet.
+        // Otherwise a stale Wi-Fi/LAN detection overwrites the saved VPN IP on
+        // every launch, making it look like the address was never persisted.
+        if (!hasUserEditedIp && (serverIp.isBlank() || serverIp == "192.168.1.9")) {
             serverIp = activeDetectedIp
         }
     }
@@ -512,7 +527,10 @@ fun ZenithAudioScreen(
         // Server IP Input Field with 1-Tap Auto-Detect
         OutlinedTextField(
             value = serverIp,
-            onValueChange = { serverIp = it },
+            onValueChange = {
+                serverIp = it
+                hasUserEditedIp = true
+            },
             label = { Text("Server IP (Auto-Discovered)") },
             placeholder = { Text("192.168.1.9 or 10.81.101.129") },
             enabled = !isConnected && !isConnecting,
@@ -532,9 +550,11 @@ fun ZenithAudioScreen(
                         onTriggerAutoDetect()
                         if (discoveredServers.isNotEmpty()) {
                             serverIp = discoveredServers.first().ip
-                        } else if (activeDetectedIp.isNotBlank()) {
-                            serverIp = activeDetectedIp
+                            hasUserEditedIp = true
                         }
+                        // If nothing was discovered, keep the saved/manual IP.
+                        // Falling back to activeDetectedIp here used to replace
+                        // a valid VPN address with the "192.168.1.9" placeholder.
                     }
                 ) {
                     Icon(
@@ -580,8 +600,7 @@ fun ZenithAudioScreen(
                     onTriggerAutoDetect()
                     if (discoveredServers.isNotEmpty()) {
                         serverIp = discoveredServers.first().ip
-                    } else if (activeDetectedIp.isNotBlank()) {
-                        serverIp = activeDetectedIp
+                        hasUserEditedIp = true
                     }
                 },
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)

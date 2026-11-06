@@ -71,9 +71,12 @@ class AudioReceiverService : Service() {
             }
         ).apply { start() }
 
+        val savedServerIp = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
+            .getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
+
         failoverManager = com.zenith.audio.network.NetworkFailoverManager(this) { newTransport, targetIp ->
             receiver?.switchEndpoint(targetIp, transportName = newTransport)
-        }.apply { start("192.168.1.9") }
+        }.apply { start(savedServerIp) }
 
         serviceScope.launch {
             serverDiscovery.latestDiscoveredServer.collect { server ->
