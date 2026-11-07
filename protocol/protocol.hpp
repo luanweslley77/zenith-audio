@@ -57,7 +57,8 @@ enum ControlCmd : uint8_t {
     CMD_RESUME      = 0x04,
     CMD_SET_VOLUME  = 0x05,
     CMD_MIC_STATE   = 0x06,
-    CMD_SET_PC_MUTE = 0x07  // param16: 1 = mute PC speakers, 0 = unmute
+    CMD_SET_PC_MUTE = 0x07, // param16: 1 = mute PC speakers, 0 = unmute
+    CMD_SET_MIC_NS  = 0x08  // target_bitrate: microphone denoiser wet mix (0-100)
 };
 
 #pragma pack(push, 1)

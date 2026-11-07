@@ -33,6 +33,7 @@ object ZapProtocol {
     const val CMD_SET_VOLUME: Byte = 0x05
     const val CMD_MIC_STATE: Byte = 0x06
     const val CMD_SET_PC_MUTE: Byte = 0x07
+    const val CMD_SET_MIC_NS: Byte = 0x08
 
     const val HEADER_SIZE = 20
 

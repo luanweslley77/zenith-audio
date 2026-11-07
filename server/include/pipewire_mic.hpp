@@ -22,6 +22,7 @@ public:
 
     void push_audio_frame(const uint8_t *data, size_t size, bool is_pcm,
                           uint32_t seq, uint64_t timestamp_us, bool discontinuity);
+    void set_noise_suppression_percent(int percent);
     void process_audio();
 
     MicJitterStats get_stats() const { return jitter_buffer_.get_stats(); }

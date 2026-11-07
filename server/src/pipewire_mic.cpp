@@ -1,4 +1,5 @@
 #include "pipewire_mic.hpp"
+#include <algorithm>
 #include <iostream>
 #include <cstring>
 
@@ -182,6 +183,12 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
             jitter_buffer_.push_float(decoded, static_cast<size_t>(samples), seq, discontinuity);
         }
     }
+}
+
+void PipeWireMicSink::set_noise_suppression_percent(int percent) {
+    int clamped = std::clamp(percent, 0, 100);
+    noise_suppressor_.set_wet_mix(static_cast<float>(clamped) / 100.0f);
+    std::cout << "[PipeWireMic] Denoiser mix set to " << clamped << "%\n" << std::flush;
 }
 
 void PipeWireMicSink::process_audio() {

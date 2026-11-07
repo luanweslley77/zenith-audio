@@ -46,6 +46,10 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
         if (command == zap::CMD_SET_BITRATE) {
             std::cout << "[Engine] Client requested bitrate change to: " << (param / 1000) << " kbps\n";
             set_bitrate(static_cast<int>(param));
+        } else if (command == zap::CMD_SET_MIC_NS) {
+            if (mic_sink_) {
+                mic_sink_->set_noise_suppression_percent(static_cast<int>(param));
+            }
         }
     });
 
