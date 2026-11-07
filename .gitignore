@@ -1,5 +1,6 @@
 # Build & Object Files
 *.o
+*.d
 *.a
 *.so
 server/bin/
