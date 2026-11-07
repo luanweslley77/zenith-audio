@@ -26,7 +26,9 @@ struct TransportStats {
 using AudioSampleCallback = std::function<void(const float *samples, size_t frame_count, uint64_t capture_timestamp_us)>;
 using FeedbackCallback = std::function<void(uint32_t loss_pct_scaled, uint32_t jitter_us, uint32_t rtt_ms)>;
 using ControlCallback = std::function<void(uint8_t command, uint32_t param)>;
-using MicFrameCallback = std::function<void(const uint8_t *data, size_t size, bool is_pcm)>;
+using MicFrameCallback = std::function<void(const uint8_t *data, size_t size, bool is_pcm,
+                                             uint32_t seq, uint64_t timestamp_us,
+                                             bool discontinuity)>;
 
 class IAudioSource {
 public:

@@ -7,7 +7,7 @@
 #include <atomic>
 #include <vector>
 #include <cstdint>
-#include "ring_buffer.hpp"
+#include "mic_jitter_buffer.hpp"
 
 namespace zenith {
 
@@ -19,8 +19,11 @@ public:
     bool start();
     void stop();
 
-    void push_audio_frame(const uint8_t *data, size_t size, bool is_pcm);
+    void push_audio_frame(const uint8_t *data, size_t size, bool is_pcm,
+                          uint32_t seq, uint64_t timestamp_us, bool discontinuity);
     void process_audio();
+
+    MicJitterStats get_stats() const { return jitter_buffer_.get_stats(); }
 
 private:
     void thread_main();
@@ -31,7 +34,7 @@ private:
     std::atomic<bool> is_running_{false};
 
     OpusDecoder *opus_decoder_ = nullptr;
-    SpscRingBuffer<float, 65536> ring_buffer_;
+    MicJitterBuffer jitter_buffer_;
 };
 
 } // namespace zenith

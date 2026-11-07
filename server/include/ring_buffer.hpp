@@ -62,6 +62,21 @@ public:
         return to_read;
     }
 
+    // Called only by Consumer. Advances the read pointer without copying,
+    // used by the microphone jitter buffer to discard stale audio after a
+    // network burst and keep the end-to-end delay bounded.
+    size_t skip(size_t count) {
+        const size_t current_write = write_idx_.load(std::memory_order_acquire);
+        const size_t current_read = read_idx_.load(std::memory_order_relaxed);
+        const size_t available = current_write - current_read;
+        const size_t to_skip = std::min(count, available);
+        if (to_skip == 0) {
+            return 0;
+        }
+        read_idx_.store(current_read + to_skip, std::memory_order_release);
+        return to_skip;
+    }
+
     size_t available_to_read() const {
         const size_t current_write = write_idx_.load(std::memory_order_acquire);
         const size_t current_read = read_idx_.load(std::memory_order_relaxed);

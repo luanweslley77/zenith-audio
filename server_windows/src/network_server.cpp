@@ -296,8 +296,10 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
 
         case zap::PKT_MIC_AUDIO_FRAME: {
             bool is_pcm = (hdr.flags & zap::FLAG_MIC_PCM) != 0;
+            bool discontinuity = (hdr.flags & zap::FLAG_DISCONTINUITY) != 0;
             if (mic_cb_ && payload_len > 0) {
-                mic_cb_(payload, payload_len, is_pcm);
+                mic_cb_(payload, payload_len, is_pcm, hdr.seq_num,
+                        hdr.timestamp_us, discontinuity);
             }
             break;
         }

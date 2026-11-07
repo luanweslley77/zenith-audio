@@ -65,18 +65,22 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
         return false;
     }
 
-    worker_thread_ = std::thread(&AudioEngine::audio_worker_thread, this);
-    stats_thread_ = std::thread(&AudioEngine::stats_worker_thread, this);
-
-    // Initialize PipeWire virtual microphone sink (Phone mic -> Linux PC)
+    // Initialize the PipeWire virtual microphone before the stats thread starts
+    // so the thread always sees a stable sink pointer.
     mic_sink_ = std::make_unique<PipeWireMicSink>();
     if (mic_sink_->start()) {
-        transport_->set_mic_frame_callback([this](const uint8_t *data, size_t size, bool is_pcm) {
-            if (mic_sink_) {
-                mic_sink_->push_audio_frame(data, size, is_pcm);
-            }
-        });
+        transport_->set_mic_frame_callback(
+            [this](const uint8_t *data, size_t size, bool is_pcm,
+                   uint32_t seq, uint64_t timestamp_us, bool discontinuity) {
+                if (mic_sink_) {
+                    mic_sink_->push_audio_frame(data, size, is_pcm, seq,
+                                               timestamp_us, discontinuity);
+                }
+            });
     }
+
+    worker_thread_ = std::thread(&AudioEngine::audio_worker_thread, this);
+    stats_thread_ = std::thread(&AudioEngine::stats_worker_thread, this);
 
     std::cout << "[Engine] Zenith Audio Engine started successfully at "
               << (initial_bitrate_bps / 1000) << " kbps\n";
@@ -88,11 +92,9 @@ void AudioEngine::stop() {
 
     is_running_.store(false);
 
-    if (mic_sink_) {
-        mic_sink_->stop();
-        mic_sink_.reset();
-    }
-
+    // Stop the producers first: once the transport receive thread is joined,
+    // no new microphone frames can reach the sink. Join the stats thread
+    // before destroying the sink it reads.
     if (source_) {
         source_->stop();
     }
@@ -105,6 +107,11 @@ void AudioEngine::stop() {
     }
     if (stats_thread_.joinable()) {
         stats_thread_.join();
+    }
+
+    if (mic_sink_) {
+        mic_sink_->stop();
+        mic_sink_.reset();
     }
 
     std::cout << "[Engine] Zenith Audio Engine stopped.\n";
@@ -214,6 +221,21 @@ void AudioEngine::stats_worker_thread() {
                       << "Buffer: " << stats.client_reported_buffer_ms << "ms | "
                       << "RTT: " << stats.client_reported_rtt_ms << "ms\n"
                       << std::flush;
+        }
+
+        if (mic_sink_) {
+            MicJitterStats mic = mic_sink_->get_stats();
+            if (mic.packets_received > 0) {
+                std::cout << "[MIC] Frames: " << mic.packets_received
+                          << " | Lost: " << mic.packets_lost
+                          << " | Late: " << mic.packets_late
+                          << " | PLC: " << mic.plc_frames
+                          << " | Underrun: " << mic.underruns
+                          << " | Overrun: " << mic.overruns
+                          << " | Skip: " << (mic.skipped_samples / 48) << "ms"
+                          << " | Buffer: " << mic.buffer_fill_ms << "ms\n"
+                          << std::flush;
+            }
         }
     }
 }

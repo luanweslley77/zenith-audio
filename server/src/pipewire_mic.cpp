@@ -154,23 +154,19 @@ void PipeWireMicSink::thread_main() {
     }
 }
 
-void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is_pcm) {
+void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is_pcm,
+                                       uint32_t seq, uint64_t timestamp_us, bool discontinuity) {
     if (!data || size == 0) return;
+    (void)timestamp_us;
 
     if (is_pcm) {
-        const int16_t *pcm16 = reinterpret_cast<const int16_t*>(data);
-        size_t num_samples = size / sizeof(int16_t);
-        std::vector<float> floats(num_samples);
-        for (size_t i = 0; i < num_samples; ++i) {
-            floats[i] = pcm16[i] / 32768.0f;
-        }
-        ring_buffer_.write(floats.data(), floats.size());
+        jitter_buffer_.push_pcm(data, size, seq, discontinuity);
     } else {
         if (!opus_decoder_) return;
-        float decoded[960 * 2]; // up to 40ms frame
+        float decoded[960 * 2]; // up to 40 ms at 48 kHz
         int samples = opus_decode_float(opus_decoder_, data, size, decoded, 960 * 2, 0);
         if (samples > 0) {
-            ring_buffer_.write(decoded, static_cast<size_t>(samples));
+            jitter_buffer_.push_float(decoded, static_cast<size_t>(samples), seq, discontinuity);
         }
     }
 }
@@ -188,15 +184,27 @@ void PipeWireMicSink::process_audio() {
         return;
     }
 
+    // The graph quantum is decided by the consumer and can change at runtime
+    // (256, 480, 1024 samples...). Trust pw_buffer::requested instead of
+    // assuming a 10 ms block.
     uint32_t req_samples = 480;
+    if (b->requested > 0) {
+        req_samples = static_cast<uint32_t>(b->requested);
+    }
     if (buf->datas[0].maxsize >= sizeof(float)) {
         req_samples = std::min<uint32_t>(req_samples, buf->datas[0].maxsize / sizeof(float));
     }
-
-    size_t read_count = ring_buffer_.read(dst, req_samples);
-    if (read_count < req_samples) {
-        std::memset(dst + read_count, 0, (req_samples - read_count) * sizeof(float));
+    if (req_samples == 0) {
+        buf->datas[0].chunk->offset = 0;
+        buf->datas[0].chunk->stride = sizeof(float);
+        buf->datas[0].chunk->size = 0;
+        pw_stream_queue_buffer(stream_, b);
+        return;
     }
+
+    // pull() always fills the complete request with PCM, concealment, or
+    // silence, so the virtual source never exposes a hole in the timeline.
+    jitter_buffer_.pull(dst, req_samples);
 
     buf->datas[0].chunk->offset = 0;
     buf->datas[0].chunk->stride = sizeof(float);
