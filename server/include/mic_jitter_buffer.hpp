@@ -61,7 +61,13 @@ public:
         if (samples > kFrameCapacity) samples = kFrameCapacity;
         packets_received_.fetch_add(1, std::memory_order_relaxed);
 
-        if (discontinuity || !have_last_seq_) {
+        // Old clients do not set FLAG_DISCONTINUITY; their sequence restarts at
+        // zero every time the microphone is toggled. Treat that as a new
+        // session instead of a very late packet, or the source would stay
+        // silent until the sequence caught up again.
+        const bool likely_restart = (seq == 0 && last_seq_ != 0);
+
+        if (discontinuity || !have_last_seq_ || likely_restart) {
             // A new capture session starts its own sequence. Do not invent
             // audio for the time the previous session was gone.
             have_last_seq_ = true;
