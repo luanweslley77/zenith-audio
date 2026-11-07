@@ -1251,6 +1251,12 @@ fun ZenithAudioScreen(
                         inactiveTrackColor = Color(0xFF333333)
                     )
                 )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "⚠ High output volume can damage hearing and headphones. Increase gradually. The loudness in the phone headphones is controlled by the phone's media volume, not by the microphone gain.",
+                    fontSize = 10.sp,
+                    color = Color(0xFFFFB74D)
+                )
             }
         }
 
@@ -1900,6 +1906,12 @@ private fun MicSettingsDialog(
                     value = gainDb,
                     onValueChange = { gainDb = it },
                     valueRange = MicSettings.MIN_GAIN_DB..MicSettings.MAX_GAIN_DB
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "⚠ GAIN is the microphone input level, not the headphone volume. It will not make the headphones louder. High values can clip/distort your voice and amplify background noise; increase gradually.",
+                    fontSize = 10.sp,
+                    color = Color(0xFFFFB74D)
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
