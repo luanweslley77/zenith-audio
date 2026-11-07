@@ -2,10 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 
 #ifdef ZENITH_HAVE_RNNOISE
 #include <rnnoise.h>
@@ -59,48 +57,47 @@ public:
         return wet_mix_.load(std::memory_order_relaxed);
     }
 
+    // Reset the model between capture sessions. Called from the same thread
+    // that calls process(), so the DenoiseState is never touched concurrently.
+    void reset() {
+#ifdef ZENITH_HAVE_RNNOISE
+        if (state_) {
+            rnnoise_destroy(state_);
+            state_ = nullptr;
+        }
+        state_ = rnnoise_create(nullptr);
+#endif
+    }
+
+    uint64_t processed_frames() const {
+        return processed_frames_.load(std::memory_order_relaxed);
+    }
+
     // Processes whole 480-sample frames in place. A short trailing frame (for
     // example after a malformed packet) is left untouched.
     void process(float *samples, size_t count) {
 #ifdef ZENITH_HAVE_RNNOISE
-        if (!samples) return;
+        if (!samples || !state_) return;
 
-        const float user_wet = wet_mix_.load(std::memory_order_relaxed);
+        const float wet = wet_mix_.load(std::memory_order_relaxed);
+        if (wet <= 0.001f) return;
+
         size_t offset = 0;
-
         while (offset + kFrameSamples <= count) {
             float input[kFrameSamples];
             float output[kFrameSamples];
 
-            double sum = 0.0;
             for (size_t i = 0; i < kFrameSamples; ++i) {
                 input[i] = samples[offset + i] * 32768.0f;
-                sum += static_cast<double>(input[i]) * input[i];
-            }
-            float input_rms = static_cast<float>(
-                std::sqrt(sum / kFrameSamples) / 32768.0);
-
-            // Slow level follower so the dry/wet decision does not pump on
-            // every syllable. At quiet levels (distant speech) keep more of
-            // the dry signal; at normal levels let RNNoise remove the hiss.
-            smoothed_rms_ = 0.9f * smoothed_rms_ + 0.1f * input_rms;
-
-            if (user_wet <= 0.001f || !state_) {
-                offset += kFrameSamples;
-                continue;
             }
 
             // rnnoise_process_frame returns the voice-activity probability,
             // which is not needed here; the denoised samples are in output.
             rnnoise_process_frame(state_, output, input);
-
-            float level = (smoothed_rms_ - kQuietRms) / (kLoudRms - kQuietRms);
-            level = std::clamp(level, 0.0f, 1.0f);
-            float effective_wet = user_wet * (kQuietWetFloor + (1.0f - kQuietWetFloor) * level);
+            processed_frames_.fetch_add(1, std::memory_order_relaxed);
 
             for (size_t i = 0; i < kFrameSamples; ++i) {
-                float mixed = output[i] * effective_wet +
-                              input[i] * (1.0f - effective_wet);
+                float mixed = output[i] * wet + input[i] * (1.0f - wet);
                 samples[offset + i] = mixed / 32768.0f;
             }
 
@@ -113,15 +110,11 @@ public:
     }
 
 private:
-    static constexpr float kQuietRms = 0.006f;     // about -44 dBFS
-    static constexpr float kLoudRms = 0.030f;      // about -30 dBFS
-    static constexpr float kQuietWetFloor = 0.35f; // preserve distant speech
-
 #ifdef ZENITH_HAVE_RNNOISE
     DenoiseState *state_ = nullptr;
 #endif
     std::atomic<float> wet_mix_{0.8f};
-    float smoothed_rms_ = 0.0f;
+    std::atomic<uint64_t> processed_frames_{0};
 };
 
 } // namespace zenith

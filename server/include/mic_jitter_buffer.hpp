@@ -20,6 +20,7 @@ struct MicJitterStats {
     uint64_t underruns = 0;
     uint64_t overruns = 0;
     uint64_t skipped_samples = 0;
+    uint64_t denoised_frames = 0;
     uint32_t buffer_fill_ms = 0;
 };
 
@@ -194,6 +195,20 @@ public:
             std::memory_order_relaxed);
 
         return samples;
+    }
+
+    // Producer-side prediction used by the denoiser: only process audio that
+    // the jitter buffer will actually keep. Late/duplicate packets must not
+    // disturb the RNNoise state before being discarded.
+    bool accepts(uint32_t seq, bool discontinuity) const {
+        if (discontinuity || !have_last_seq_) return true;
+        if (seq == 0 && last_seq_ != 0) return true;
+        if (seq <= last_seq_) return false;
+        return true; // next packet or a gap
+    }
+
+    bool will_restart(uint32_t seq, bool discontinuity) const {
+        return discontinuity || !have_last_seq_ || (seq == 0 && last_seq_ != 0);
     }
 
     MicJitterStats get_stats() const {

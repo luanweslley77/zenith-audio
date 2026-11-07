@@ -25,7 +25,7 @@ public:
     void set_noise_suppression_percent(int percent);
     void process_audio();
 
-    MicJitterStats get_stats() const { return jitter_buffer_.get_stats(); }
+    MicJitterStats get_stats() const;
 
 private:
     void thread_main();

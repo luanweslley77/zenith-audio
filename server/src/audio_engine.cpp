@@ -42,17 +42,6 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
         encoder_->set_packet_loss_percent(loss_pct);
     });
 
-    transport_->set_control_callback([this](uint8_t command, uint32_t param) {
-        if (command == zap::CMD_SET_BITRATE) {
-            std::cout << "[Engine] Client requested bitrate change to: " << (param / 1000) << " kbps\n";
-            set_bitrate(static_cast<int>(param));
-        } else if (command == zap::CMD_SET_MIC_NS) {
-            if (mic_sink_) {
-                mic_sink_->set_noise_suppression_percent(static_cast<int>(param));
-            }
-        }
-    });
-
     is_running_.store(true);
 
     // Start PipeWire capture
@@ -82,6 +71,19 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
                 }
             });
     }
+
+    // Register the control callback after the sink exists so an early
+    // CMD_SET_MIC_NS cannot be dropped.
+    transport_->set_control_callback([this](uint8_t command, uint32_t param) {
+        if (command == zap::CMD_SET_BITRATE) {
+            std::cout << "[Engine] Client requested bitrate change to: " << (param / 1000) << " kbps\n";
+            set_bitrate(static_cast<int>(param));
+        } else if (command == zap::CMD_SET_MIC_NS) {
+            if (mic_sink_) {
+                mic_sink_->set_noise_suppression_percent(static_cast<int>(param));
+            }
+        }
+    });
 
     worker_thread_ = std::thread(&AudioEngine::audio_worker_thread, this);
     stats_thread_ = std::thread(&AudioEngine::stats_worker_thread, this);
@@ -237,6 +239,7 @@ void AudioEngine::stats_worker_thread() {
             uint64_t underrun_delta = mic.underruns - prev_mic_stats.underruns;
             uint64_t overrun_delta = mic.overruns - prev_mic_stats.overruns;
             uint64_t skip_delta = mic.skipped_samples - prev_mic_stats.skipped_samples;
+            uint64_t denoised_delta = mic.denoised_frames - prev_mic_stats.denoised_frames;
             prev_mic_stats = mic;
 
             if (recv_delta > 0) {
@@ -247,6 +250,7 @@ void AudioEngine::stats_worker_thread() {
                           << " | Underrun: +" << underrun_delta
                           << " | Overrun: +" << overrun_delta
                           << " | Skip: +" << (skip_delta / 48) << "ms"
+                          << " | NS: +" << denoised_delta
                           << " | Buffer: " << mic.buffer_fill_ms << "ms\n"
                           << std::flush;
             }

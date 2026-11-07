@@ -163,7 +163,18 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
     if (!data || size == 0) return;
     (void)timestamp_us;
 
+    if (jitter_buffer_.will_restart(seq, discontinuity)) {
+        noise_suppressor_.reset();
+    }
+
     if (is_pcm) {
+        // Late/duplicate packets are discarded by the jitter buffer. Let it
+        // account for them without feeding out-of-order audio to RNNoise.
+        if (!jitter_buffer_.accepts(seq, discontinuity)) {
+            jitter_buffer_.push_pcm(data, size, seq, discontinuity);
+            return;
+        }
+
         size_t samples = size / sizeof(int16_t);
         if (samples > 2048) samples = 2048;
         float converted[2048];
@@ -179,10 +190,18 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
         float decoded[960 * 2]; // up to 40 ms at 48 kHz
         int samples = opus_decode_float(opus_decoder_, data, size, decoded, 960 * 2, 0);
         if (samples > 0) {
-            noise_suppressor_.process(decoded, static_cast<size_t>(samples));
+            if (jitter_buffer_.accepts(seq, discontinuity)) {
+                noise_suppressor_.process(decoded, static_cast<size_t>(samples));
+            }
             jitter_buffer_.push_float(decoded, static_cast<size_t>(samples), seq, discontinuity);
         }
     }
+}
+
+MicJitterStats PipeWireMicSink::get_stats() const {
+    MicJitterStats stats = jitter_buffer_.get_stats();
+    stats.denoised_frames = noise_suppressor_.processed_frames();
+    return stats;
 }
 
 void PipeWireMicSink::set_noise_suppression_percent(int percent) {
