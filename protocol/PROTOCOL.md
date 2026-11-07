@@ -41,6 +41,7 @@ Every datagram begins with the 20-byte `ZapHeader`:
 | `0x05` | `CMD_SET_VOLUME` | `param16` (0–100) | Set the PC default output sink volume. |
 | `0x06` | `CMD_MIC_STATE` | `param16` (0/1) | Notify the server that the phone microphone was turned off/on. |
 | `0x07` | `CMD_SET_PC_MUTE` | `param16` (0/1) | Mute/unmute the PC default output sink. The sink monitor used for capture remains available, so the phone can be the only audible output. |
+| `0x08` | `CMD_SET_MIC_NS` | `param16` (0–100) | Microphone denoiser wet mix: `0` = bypass, `100` = full RNNoise. The server also resets its model on a new capture session. |
 
 The PC-to-phone audio and the phone-to-PC microphone are independent paths. A client can pause the PC audio without affecting its microphone, and can mute the PC speakers without interrupting the phone stream.
 

@@ -25,6 +25,7 @@ public:
     MicNoiseSuppressor() {
 #ifdef ZENITH_HAVE_RNNOISE
         state_ = rnnoise_create(nullptr);
+        linked_ = state_ != nullptr;
 #endif
     }
 
@@ -41,16 +42,19 @@ public:
     MicNoiseSuppressor &operator=(const MicNoiseSuppressor &) = delete;
 
     bool available() const {
-#ifdef ZENITH_HAVE_RNNOISE
-        return state_ != nullptr;
-#else
-        return false;
-#endif
+        return linked_;
     }
 
     // 0 = bypass, 1 = full RNNoise. The control packet from the phone sets it.
     void set_wet_mix(float mix) {
-        wet_mix_.store(std::clamp(mix, 0.0f, 1.0f), std::memory_order_relaxed);
+        float clamped = std::clamp(mix, 0.0f, 1.0f);
+        float previous = wet_mix_.exchange(clamped, std::memory_order_relaxed);
+        if (previous <= 0.001f && clamped > 0.001f &&
+            processed_frames_.load(std::memory_order_relaxed) > 0) {
+            // The model was not advanced during bypass; restart it instead of
+            // resuming from a stale voice/noise estimate.
+            reset_requested_.store(true, std::memory_order_relaxed);
+        }
     }
 
     float wet_mix() const {
@@ -78,6 +82,10 @@ public:
     void process(float *samples, size_t count) {
 #ifdef ZENITH_HAVE_RNNOISE
         if (!samples || !state_) return;
+        if (reset_requested_.exchange(false, std::memory_order_relaxed)) {
+            reset();
+            if (!state_) return;
+        }
 
         const float wet = wet_mix_.load(std::memory_order_relaxed);
         if (wet <= 0.001f) return;
@@ -113,8 +121,10 @@ private:
 #ifdef ZENITH_HAVE_RNNOISE
     DenoiseState *state_ = nullptr;
 #endif
-    std::atomic<float> wet_mix_{0.8f};
+    bool linked_ = false;
+    std::atomic<float> wet_mix_{0.0f};
     std::atomic<uint64_t> processed_frames_{0};
+    std::atomic<bool> reset_requested_{false};
 };
 
 } // namespace zenith

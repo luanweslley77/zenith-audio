@@ -42,6 +42,17 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
         encoder_->set_packet_loss_percent(loss_pct);
     });
 
+    transport_->set_control_callback([this](uint8_t command, uint32_t param) {
+        if (command == zap::CMD_SET_BITRATE) {
+            std::cout << "[Engine] Client requested bitrate change to: " << (param / 1000) << " kbps\n";
+            set_bitrate(static_cast<int>(param));
+        } else if (command == zap::CMD_SET_MIC_NS) {
+            if (mic_sink_) {
+                mic_sink_->set_noise_suppression_percent(static_cast<int>(param));
+            }
+        }
+    });
+
     is_running_.store(true);
 
     // Start PipeWire capture
@@ -71,19 +82,6 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
                 }
             });
     }
-
-    // Register the control callback after the sink exists so an early
-    // CMD_SET_MIC_NS cannot be dropped.
-    transport_->set_control_callback([this](uint8_t command, uint32_t param) {
-        if (command == zap::CMD_SET_BITRATE) {
-            std::cout << "[Engine] Client requested bitrate change to: " << (param / 1000) << " kbps\n";
-            set_bitrate(static_cast<int>(param));
-        } else if (command == zap::CMD_SET_MIC_NS) {
-            if (mic_sink_) {
-                mic_sink_->set_noise_suppression_percent(static_cast<int>(param));
-            }
-        }
-    });
 
     worker_thread_ = std::thread(&AudioEngine::audio_worker_thread, this);
     stats_thread_ = std::thread(&AudioEngine::stats_worker_thread, this);

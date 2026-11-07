@@ -1,6 +1,6 @@
 CXX ?= g++
 CXXFLAGS ?= -std=c++20 -O3 -Wall -Wextra -pthread -Iinclude -I../protocol $(shell pkg-config --cflags libpipewire-0.3 opus)
-CXXFLAGS += -MMD -MP
+override CXXFLAGS += -MMD -MP
 LDFLAGS ?= $(shell pkg-config --libs libpipewire-0.3 opus) -pthread
 
 # Optional RNNoise noise suppression. When the development package is not
@@ -8,9 +8,14 @@ LDFLAGS ?= $(shell pkg-config --libs libpipewire-0.3 opus) -pthread
 RNNOISE_CFLAGS ?= $(shell pkg-config --cflags rnnoise 2>/dev/null)
 RNNOISE_LIBS ?= $(shell pkg-config --libs rnnoise 2>/dev/null)
 ifneq ($(strip $(RNNOISE_LIBS)),)
-CXXFLAGS += -DZENITH_HAVE_RNNOISE $(RNNOISE_CFLAGS)
-LDFLAGS += $(RNNOISE_LIBS)
+override CXXFLAGS += -DZENITH_HAVE_RNNOISE $(RNNOISE_CFLAGS)
+override LDFLAGS += $(RNNOISE_LIBS)
 endif
+
+# Rebuild objects when RNNoise availability changes, even without a clean.
+RNNOISE_STATE := $(if $(strip $(RNNOISE_LIBS)),on,off)
+RNNOISE_STAMP := .rnnoise-state
+$(shell echo '$(RNNOISE_STATE)' | cmp -s - $(RNNOISE_STAMP) 2>/dev/null || echo '$(RNNOISE_STATE)' > $(RNNOISE_STAMP))
 
 SRCS = src/main.cpp \
        src/pipewire_capture.cpp \
@@ -27,6 +32,8 @@ TARGET = bin/zenith-server
 
 all: $(TARGET)
 
+$(OBJS): $(RNNOISE_STAMP)
+
 $(TARGET): $(OBJS)
 	@mkdir -p bin
 	$(CXX) $(OBJS) $(LDFLAGS) -o $(TARGET)
@@ -36,6 +43,6 @@ $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(OBJS) $(DEPS) bin
+	rm -rf $(OBJS) $(DEPS) $(RNNOISE_STAMP) bin
 
 -include $(DEPS)

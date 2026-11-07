@@ -428,7 +428,17 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                 }
 
                 if (control_cb_) {
-                    control_cb_(ctrl.command, ctrl.target_bitrate);
+                    uint32_t control_param = ctrl.target_bitrate;
+                    if (ctrl.command == zap::CMD_SET_MIC_NS) {
+                        control_param = static_cast<uint32_t>(ctrl.param16);
+                        // Older clients sent the percentage in target_bitrate.
+                        // Keep them working while the new app uses param16.
+                        if (control_param == 0 && ctrl.target_bitrate > 0 &&
+                            ctrl.target_bitrate <= 100) {
+                            control_param = ctrl.target_bitrate;
+                        }
+                    }
+                    control_cb_(ctrl.command, control_param);
                 }
             }
             break;

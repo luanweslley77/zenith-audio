@@ -45,46 +45,43 @@ public:
     static constexpr uint32_t kMaxConcealMs = 150;    // never invent more than a short stall
     static constexpr uint64_t kIdleResetUs = 500'000; // stop PLC after the phone goes quiet
 
-    void push_pcm(const uint8_t *data, size_t bytes, uint32_t seq, bool discontinuity) {
-        if (!data || bytes < sizeof(int16_t)) return;
-        size_t samples = bytes / sizeof(int16_t);
-        if (samples > kFrameCapacity) samples = kFrameCapacity;
-
-        float converted[kFrameCapacity];
+    static size_t pcm16_to_float(const uint8_t *data, size_t bytes,
+                                 float *out, size_t capacity) {
+        if (!data || !out || bytes < sizeof(int16_t) || capacity == 0) return 0;
+        size_t samples = std::min(bytes / sizeof(int16_t), capacity);
         for (size_t i = 0; i < samples; ++i) {
             int16_t sample = 0;
             std::memcpy(&sample, data + i * sizeof(int16_t), sizeof(sample));
-            converted[i] = static_cast<float>(sample) / 32768.0f;
+            out[i] = static_cast<float>(sample) / 32768.0f;
         }
-        push_float(converted, samples, seq, discontinuity);
+        return samples;
     }
 
-    void push_float(const float *data, size_t samples, uint32_t seq, bool discontinuity) {
-        if (!data || samples == 0) return;
+    bool push_pcm(const uint8_t *data, size_t bytes, uint32_t seq, bool discontinuity) {
+        float converted[kFrameCapacity];
+        size_t samples = pcm16_to_float(data, bytes, converted, kFrameCapacity);
+        if (samples == 0) return false;
+        return push_float(converted, samples, seq, discontinuity);
+    }
+
+    bool push_float(const float *data, size_t samples, uint32_t seq, bool discontinuity) {
+        if (!data || samples == 0) return false;
         if (samples > kFrameCapacity) samples = kFrameCapacity;
         packets_received_.fetch_add(1, std::memory_order_relaxed);
 
-        // Old clients do not set FLAG_DISCONTINUITY; their sequence restarts at
-        // zero every time the microphone is toggled. Treat that as a new
-        // session instead of a very late packet, or the source would stay
-        // silent until the sequence caught up again.
-        const bool likely_restart = (seq == 0 && last_seq_ != 0);
+        const SeqAction action = classify(seq, discontinuity);
+        if (action == SeqAction::Duplicate || action == SeqAction::Late) {
+            packets_late_.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
 
-        if (discontinuity || !have_last_seq_ || likely_restart) {
+        if (action == SeqAction::Restart) {
             // A new capture session starts its own sequence. Do not invent
             // audio for the time the previous session was gone.
             have_last_seq_ = true;
             last_seq_ = seq;
             last_frame_samples_ = 0;
             gap_gain_ = 1.0f;
-        } else if (seq == last_seq_) {
-            // Duplicate datagram.
-            packets_late_.fetch_add(1, std::memory_order_relaxed);
-            return;
-        } else if (seq < last_seq_) {
-            // Late packet. The timeline has already moved past it.
-            packets_late_.fetch_add(1, std::memory_order_relaxed);
-            return;
         } else if (seq > last_seq_ + 1) {
             uint32_t missing = seq - last_seq_ - 1;
             packets_lost_.fetch_add(missing, std::memory_order_relaxed);
@@ -120,6 +117,16 @@ public:
             overruns_.fetch_add(1, std::memory_order_relaxed);
         }
         last_push_time_us_.store(now_us(), std::memory_order_release);
+        return true;
+    }
+
+    // Used when the denoiser has rejected a packet before push_pcm/push_float;
+    // keep the transport counters accurate without touching the timeline.
+    void note_rejected(uint32_t seq, bool discontinuity) {
+        (void)seq;
+        (void)discontinuity;
+        packets_received_.fetch_add(1, std::memory_order_relaxed);
+        packets_late_.fetch_add(1, std::memory_order_relaxed);
     }
 
     // Always writes exactly `samples` floats. Before enough audio has arrived,
@@ -201,14 +208,15 @@ public:
     // the jitter buffer will actually keep. Late/duplicate packets must not
     // disturb the RNNoise state before being discarded.
     bool accepts(uint32_t seq, bool discontinuity) const {
-        if (discontinuity || !have_last_seq_) return true;
-        if (seq == 0 && last_seq_ != 0) return true;
-        if (seq <= last_seq_) return false;
-        return true; // next packet or a gap
+        SeqAction action = classify(seq, discontinuity);
+        return action == SeqAction::Restart || action == SeqAction::Accept;
     }
 
     bool will_restart(uint32_t seq, bool discontinuity) const {
-        return discontinuity || !have_last_seq_ || (seq == 0 && last_seq_ != 0);
+        // The first packet of the process lifetime initializes the model; the
+        // DenoiseState is already fresh and does not need a reset.
+        if (!have_last_seq_) return false;
+        return classify(seq, discontinuity) == SeqAction::Restart;
     }
 
     MicJitterStats get_stats() const {
@@ -226,6 +234,17 @@ public:
 
 private:
     static constexpr size_t kFadeSamples = 64; // ~1.3 ms at 48 kHz
+
+    enum class SeqAction { Restart, Accept, Duplicate, Late };
+
+    SeqAction classify(uint32_t seq, bool discontinuity) const {
+        if (discontinuity || !have_last_seq_) return SeqAction::Restart;
+        // Old clients reset the sequence to zero when the mic is toggled.
+        if (seq == 0 && last_seq_ != 0) return SeqAction::Restart;
+        if (seq == last_seq_) return SeqAction::Duplicate;
+        if (seq < last_seq_) return SeqAction::Late;
+        return SeqAction::Accept;
+    }
 
     static uint64_t now_us() {
         return static_cast<uint64_t>(

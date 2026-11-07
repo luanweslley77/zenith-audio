@@ -167,22 +167,18 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
         noise_suppressor_.reset();
     }
 
-    if (is_pcm) {
-        // Late/duplicate packets are discarded by the jitter buffer. Let it
-        // account for them without feeding out-of-order audio to RNNoise.
-        if (!jitter_buffer_.accepts(seq, discontinuity)) {
-            jitter_buffer_.push_pcm(data, size, seq, discontinuity);
-            return;
-        }
+    // Late/duplicate packets must not advance the stateful Opus decoder or the
+    // RNNoise model. Count them and stop before any decoding/denoising.
+    if (!jitter_buffer_.accepts(seq, discontinuity)) {
+        jitter_buffer_.note_rejected(seq, discontinuity);
+        return;
+    }
 
-        size_t samples = size / sizeof(int16_t);
-        if (samples > 2048) samples = 2048;
-        float converted[2048];
-        for (size_t i = 0; i < samples; ++i) {
-            int16_t sample = 0;
-            std::memcpy(&sample, data + i * sizeof(int16_t), sizeof(sample));
-            converted[i] = static_cast<float>(sample) / 32768.0f;
-        }
+    if (is_pcm) {
+        float converted[MicJitterBuffer::kFrameCapacity];
+        size_t samples = MicJitterBuffer::pcm16_to_float(
+            data, size, converted, MicJitterBuffer::kFrameCapacity);
+        if (samples == 0) return;
         noise_suppressor_.process(converted, samples);
         jitter_buffer_.push_float(converted, samples, seq, discontinuity);
     } else {
@@ -190,9 +186,7 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
         float decoded[960 * 2]; // up to 40 ms at 48 kHz
         int samples = opus_decode_float(opus_decoder_, data, size, decoded, 960 * 2, 0);
         if (samples > 0) {
-            if (jitter_buffer_.accepts(seq, discontinuity)) {
-                noise_suppressor_.process(decoded, static_cast<size_t>(samples));
-            }
+            noise_suppressor_.process(decoded, static_cast<size_t>(samples));
             jitter_buffer_.push_float(decoded, static_cast<size_t>(samples), seq, discontinuity);
         }
     }

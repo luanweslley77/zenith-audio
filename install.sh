@@ -28,22 +28,31 @@ echo -e "${YELLOW}[1/4] Detecting Linux Distribution & Dependencies...${NC}"
 if command -v apt-get &>/dev/null; then
     echo -e "${GREEN}[✓] Debian/Ubuntu based system detected (APT)${NC}"
     sudo apt-get update -qq || true
-    sudo apt-get install -y build-essential pkg-config libpipewire-0.3-dev libopus-dev librnnoise-dev
+    sudo apt-get install -y build-essential pkg-config libpipewire-0.3-dev libopus-dev
+    sudo apt-get install -y librnnoise-dev || \
+        echo -e "${YELLOW}[!] librnnoise-dev not found; RNNoise will be disabled.${NC}"
 elif command -v pacman &>/dev/null; then
     echo -e "${GREEN}[✓] Arch Linux based system detected (Pacman)${NC}"
-    sudo pacman -S --needed --noconfirm base-devel pkgconf pipewire opus rnnoise
+    sudo pacman -S --needed --noconfirm base-devel pkgconf pipewire opus
+    sudo pacman -S --needed --noconfirm rnnoise || \
+        echo -e "${YELLOW}[!] rnnoise not found; RNNoise will be disabled.${NC}"
 elif command -v dnf &>/dev/null; then
     echo -e "${GREEN}[✓] Fedora/RHEL based system detected (DNF)${NC}"
-    sudo dnf install -y gcc-c++ make pkgconfig pipewire-devel opus-devel rnnoise-devel
+    sudo dnf install -y gcc-c++ make pkgconfig pipewire-devel opus-devel
+    sudo dnf install -y rnnoise-devel || \
+        echo -e "${YELLOW}[!] rnnoise-devel not found; RNNoise will be disabled.${NC}"
 elif command -v zypper &>/dev/null; then
     echo -e "${GREEN}[✓] openSUSE based system detected (Zypper)${NC}"
-    sudo zypper install -y gcc-c++ make pkg-config pipewire-devel libopus-devel rnnoise-devel
+    sudo zypper install -y gcc-c++ make pkg-config pipewire-devel libopus-devel
+    sudo zypper install -y rnnoise-devel || \
+        echo -e "${YELLOW}[!] rnnoise-devel not found; RNNoise will be disabled.${NC}"
 else
     echo -e "${YELLOW}[!] Warning: Unknown package manager. Checking build tools...${NC}"
     if ! command -v pkg-config &>/dev/null || ! command -v g++ &>/dev/null; then
         echo -e "${RED}[✗] Please install g++, pkg-config, libpipewire-0.3 and libopus headers manually.${NC}"
         exit 1
     fi
+    echo -e "${YELLOW}[!] RNNoise is optional; install its development package to enable microphone denoising.${NC}"
 fi
 
 # 2. Build Zenith C++ Server
@@ -59,7 +68,7 @@ if pkg-config --exists rnnoise 2>/dev/null; then
     echo -e "${GREEN}[✓] RNNoise microphone noise suppression enabled.${NC}"
 else
     echo -e "${YELLOW}[!] RNNoise development files not found; microphone noise suppression will be disabled.${NC}"
-    echo -e "${YELLOW}    Install rnnoise-devel (Fedora), librnnoise-dev (Debian/Ubuntu) or rnnoise (Arch) and rebuild.${NC}"
+    echo -e "${YELLOW}    Install rnnoise-devel (Fedora/openSUSE), librnnoise-dev (Debian/Ubuntu) or rnnoise (Arch) and rebuild.${NC}"
 fi
 echo -e "${GREEN}[✓] Zenith server compiled successfully!${NC}"
 
