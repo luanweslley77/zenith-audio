@@ -198,6 +198,7 @@ void AudioEngine::audio_worker_thread() {
 void AudioEngine::stats_worker_thread() {
     uint64_t last_bytes = 0;
     auto last_time = std::chrono::steady_clock::now();
+    MicJitterStats prev_mic_stats{};
 
     while (is_running_.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -225,14 +226,23 @@ void AudioEngine::stats_worker_thread() {
 
         if (mic_sink_) {
             MicJitterStats mic = mic_sink_->get_stats();
-            if (mic.packets_received > 0) {
-                std::cout << "[MIC] Frames: " << mic.packets_received
-                          << " | Lost: " << mic.packets_lost
-                          << " | Late: " << mic.packets_late
-                          << " | PLC: " << mic.plc_frames
-                          << " | Underrun: " << mic.underruns
-                          << " | Overrun: " << mic.overruns
-                          << " | Skip: " << (mic.skipped_samples / 48) << "ms"
+            uint64_t recv_delta = mic.packets_received - prev_mic_stats.packets_received;
+            uint64_t lost_delta = mic.packets_lost - prev_mic_stats.packets_lost;
+            uint64_t late_delta = mic.packets_late - prev_mic_stats.packets_late;
+            uint64_t plc_delta = mic.plc_frames - prev_mic_stats.plc_frames;
+            uint64_t underrun_delta = mic.underruns - prev_mic_stats.underruns;
+            uint64_t overrun_delta = mic.overruns - prev_mic_stats.overruns;
+            uint64_t skip_delta = mic.skipped_samples - prev_mic_stats.skipped_samples;
+            prev_mic_stats = mic;
+
+            if (recv_delta > 0) {
+                std::cout << "[MIC] Recv: +" << recv_delta
+                          << " | Lost: +" << lost_delta
+                          << " | Late: +" << late_delta
+                          << " | PLC: +" << plc_delta
+                          << " | Underrun: +" << underrun_delta
+                          << " | Overrun: +" << overrun_delta
+                          << " | Skip: +" << (skip_delta / 48) << "ms"
                           << " | Buffer: " << mic.buffer_fill_ms << "ms\n"
                           << std::flush;
             }

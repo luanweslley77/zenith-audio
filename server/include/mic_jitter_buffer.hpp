@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -41,6 +42,7 @@ public:
     static constexpr size_t kMaxExtraSamples = 1920;  // cap at ~80 ms
     static constexpr size_t kFrameCapacity = 2048;    // max samples in one packet
     static constexpr uint32_t kMaxConcealMs = 150;    // never invent more than a short stall
+    static constexpr uint64_t kIdleResetUs = 500'000; // stop PLC after the phone goes quiet
 
     void push_pcm(const uint8_t *data, size_t bytes, uint32_t seq, bool discontinuity) {
         if (!data || bytes < sizeof(int16_t)) return;
@@ -116,12 +118,28 @@ public:
         if (written < samples) {
             overruns_.fetch_add(1, std::memory_order_relaxed);
         }
+        last_push_time_us_.store(now_us(), std::memory_order_release);
     }
 
     // Always writes exactly `samples` floats. Before enough audio has arrived,
     // it writes silence; after that it writes PCM or a concealment tail.
     size_t pull(float *dst, size_t samples) {
         if (!dst || samples == 0) return 0;
+
+        // The phone can stop sending at any time (mic toggled off, app killed,
+        // Wi-Fi lost). Without this timeout the source would keep generating
+        // concealment forever and the underrun counter would grow without
+        // bound. After a short silence, return to the initial prefill state.
+        uint64_t last_push = last_push_time_us_.load(std::memory_order_acquire);
+        if (started_ && last_push != 0 && now_us() - last_push > kIdleResetUs) {
+            ring_.skip(ring_.available_to_read());
+            started_ = false;
+            plc_active_ = false;
+            last_output_samples_ = 0;
+            buffer_fill_ms_.store(0, std::memory_order_relaxed);
+            std::memset(dst, 0, samples * sizeof(float));
+            return samples;
+        }
 
         if (!started_) {
             if (ring_.available_to_read() >= kTargetSamples) {
@@ -193,6 +211,12 @@ public:
 
 private:
     static constexpr size_t kFadeSamples = 64; // ~1.3 ms at 48 kHz
+
+    static uint64_t now_us() {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
 
     void append_concealment_frame() {
         float frame[kFrameCapacity];
@@ -266,6 +290,7 @@ private:
     std::atomic<uint64_t> overruns_{0};
     std::atomic<uint64_t> skipped_samples_{0};
     std::atomic<uint32_t> buffer_fill_ms_{0};
+    std::atomic<uint64_t> last_push_time_us_{0};
 };
 
 } // namespace zenith
