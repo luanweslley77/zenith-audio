@@ -1,5 +1,6 @@
 CXX ?= g++
 CXXFLAGS ?= -std=c++20 -O3 -Wall -Wextra -pthread -Iinclude -I../protocol $(shell pkg-config --cflags libpipewire-0.3 opus)
+CXXFLAGS += -MMD -MP
 LDFLAGS ?= $(shell pkg-config --libs libpipewire-0.3 opus) -pthread
 
 SRCS = src/main.cpp \
@@ -10,6 +11,7 @@ SRCS = src/main.cpp \
        src/audio_engine.cpp
 
 OBJS = $(SRCS:.cpp=.o)
+DEPS = $(OBJS:.o=.d)
 TARGET = bin/zenith-server
 
 .PHONY: all clean
@@ -25,4 +27,6 @@ $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(OBJS) bin
+	rm -rf $(OBJS) $(DEPS) bin
+
+-include $(DEPS)
