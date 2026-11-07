@@ -170,7 +170,7 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
     // Late/duplicate packets must not advance the stateful Opus decoder or the
     // RNNoise model. Count them and stop before any decoding/denoising.
     if (!jitter_buffer_.accepts(seq, discontinuity)) {
-        jitter_buffer_.note_rejected(seq, discontinuity);
+        jitter_buffer_.note_rejected();
         return;
     }
 
@@ -178,7 +178,12 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
         float converted[MicJitterBuffer::kFrameCapacity];
         size_t samples = MicJitterBuffer::pcm16_to_float(
             data, size, converted, MicJitterBuffer::kFrameCapacity);
-        if (samples == 0) return;
+        if (samples == 0) {
+            // Malformed short/odd payload: account for it so the next sequence
+            // number produces a PLC gap instead of silently shifting time.
+            jitter_buffer_.note_rejected();
+            return;
+        }
         noise_suppressor_.process(converted, samples);
         jitter_buffer_.push_float(converted, samples, seq, discontinuity);
     } else {

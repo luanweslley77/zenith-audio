@@ -29,12 +29,21 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
         return false;
     }
 
-    if (!transport_->start(port)) {
-        std::cerr << "[Engine] Failed to start network transport\n";
-        return false;
+    // Create and start the virtual microphone before the transport receive
+    // thread exists. The callback can then read mic_sink_ without racing a
+    // main-thread assignment, and no early CMD_SET_MIC_NS is dropped.
+    mic_sink_ = std::make_unique<PipeWireMicSink>();
+    if (mic_sink_->start()) {
+        transport_->set_mic_frame_callback(
+            [this](const uint8_t *data, size_t size, bool is_pcm,
+                   uint32_t seq, uint64_t timestamp_us, bool discontinuity) {
+                if (mic_sink_) {
+                    mic_sink_->push_audio_frame(data, size, is_pcm, seq,
+                                               timestamp_us, discontinuity);
+                }
+            });
     }
 
-    // Connect feedback and control callbacks
     transport_->set_feedback_callback([this](uint32_t loss_pct_scaled, uint32_t jitter_us, uint32_t rtt_ms) {
         (void)jitter_us;
         (void)rtt_ms;
@@ -53,6 +62,15 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
         }
     });
 
+    if (!transport_->start(port)) {
+        std::cerr << "[Engine] Failed to start network transport\n";
+        if (mic_sink_) {
+            mic_sink_->stop();
+            mic_sink_.reset();
+        }
+        return false;
+    }
+
     is_running_.store(true);
 
     // Start PipeWire capture
@@ -65,22 +83,12 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
     if (!src_ok) {
         std::cerr << "[Engine] Failed to start audio source capture\n";
         transport_->stop();
+        if (mic_sink_) {
+            mic_sink_->stop();
+            mic_sink_.reset();
+        }
         is_running_.store(false);
         return false;
-    }
-
-    // Initialize the PipeWire virtual microphone before the stats thread starts
-    // so the thread always sees a stable sink pointer.
-    mic_sink_ = std::make_unique<PipeWireMicSink>();
-    if (mic_sink_->start()) {
-        transport_->set_mic_frame_callback(
-            [this](const uint8_t *data, size_t size, bool is_pcm,
-                   uint32_t seq, uint64_t timestamp_us, bool discontinuity) {
-                if (mic_sink_) {
-                    mic_sink_->push_audio_frame(data, size, is_pcm, seq,
-                                               timestamp_us, discontinuity);
-                }
-            });
     }
 
     worker_thread_ = std::thread(&AudioEngine::audio_worker_thread, this);

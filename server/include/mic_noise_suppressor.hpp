@@ -25,7 +25,7 @@ public:
     MicNoiseSuppressor() {
 #ifdef ZENITH_HAVE_RNNOISE
         state_ = rnnoise_create(nullptr);
-        linked_ = state_ != nullptr;
+        linked_.store(state_ != nullptr, std::memory_order_relaxed);
 #endif
     }
 
@@ -42,7 +42,7 @@ public:
     MicNoiseSuppressor &operator=(const MicNoiseSuppressor &) = delete;
 
     bool available() const {
-        return linked_;
+        return linked_.load(std::memory_order_relaxed);
     }
 
     // 0 = bypass, 1 = full RNNoise. The control packet from the phone sets it.
@@ -70,6 +70,8 @@ public:
             state_ = nullptr;
         }
         state_ = rnnoise_create(nullptr);
+        linked_.store(state_ != nullptr, std::memory_order_relaxed);
+        reset_requested_.store(false, std::memory_order_relaxed);
 #endif
     }
 
@@ -81,11 +83,12 @@ public:
     // example after a malformed packet) is left untouched.
     void process(float *samples, size_t count) {
 #ifdef ZENITH_HAVE_RNNOISE
-        if (!samples || !state_) return;
+        // Consume a pending 0->wet reset even when the model is currently
+        // unavailable, so a failed create can be retried on the next frame.
         if (reset_requested_.exchange(false, std::memory_order_relaxed)) {
             reset();
-            if (!state_) return;
         }
+        if (!samples || !state_) return;
 
         const float wet = wet_mix_.load(std::memory_order_relaxed);
         if (wet <= 0.001f) return;
@@ -121,7 +124,7 @@ private:
 #ifdef ZENITH_HAVE_RNNOISE
     DenoiseState *state_ = nullptr;
 #endif
-    bool linked_ = false;
+    std::atomic<bool> linked_{false};
     std::atomic<float> wet_mix_{0.0f};
     std::atomic<uint64_t> processed_frames_{0};
     std::atomic<bool> reset_requested_{false};

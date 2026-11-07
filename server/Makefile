@@ -15,7 +15,6 @@ endif
 # Rebuild objects when RNNoise availability changes, even without a clean.
 RNNOISE_STATE := $(if $(strip $(RNNOISE_LIBS)),on,off)
 RNNOISE_STAMP := .rnnoise-state
-$(shell echo '$(RNNOISE_STATE)' | cmp -s - $(RNNOISE_STAMP) 2>/dev/null || echo '$(RNNOISE_STATE)' > $(RNNOISE_STAMP))
 
 SRCS = src/main.cpp \
        src/pipewire_capture.cpp \
@@ -28,9 +27,14 @@ OBJS = $(SRCS:.cpp=.o)
 DEPS = $(OBJS:.o=.d)
 TARGET = bin/zenith-server
 
-.PHONY: all clean
+.PHONY: all clean FORCE
 
 all: $(TARGET)
+
+$(RNNOISE_STAMP): FORCE
+	@echo '$(RNNOISE_STATE)' | cmp -s - $@ || echo '$(RNNOISE_STATE)' > $@
+
+FORCE:
 
 $(OBJS): $(RNNOISE_STAMP)
 

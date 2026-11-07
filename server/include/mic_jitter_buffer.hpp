@@ -34,7 +34,7 @@ struct MicJitterStats {
 // playout side holds a small target delay so jitter and late packets do not
 // become clicks.
 //
-// Producer: the UDP receive thread (push_pcm/push_float).
+// Producer: the UDP receive thread (push_float).
 // Consumer: the PipeWire real-time thread (pull).
 class MicJitterBuffer {
 public:
@@ -55,13 +55,6 @@ public:
             out[i] = static_cast<float>(sample) / 32768.0f;
         }
         return samples;
-    }
-
-    bool push_pcm(const uint8_t *data, size_t bytes, uint32_t seq, bool discontinuity) {
-        float converted[kFrameCapacity];
-        size_t samples = pcm16_to_float(data, bytes, converted, kFrameCapacity);
-        if (samples == 0) return false;
-        return push_float(converted, samples, seq, discontinuity);
     }
 
     bool push_float(const float *data, size_t samples, uint32_t seq, bool discontinuity) {
@@ -120,11 +113,9 @@ public:
         return true;
     }
 
-    // Used when the denoiser has rejected a packet before push_pcm/push_float;
-    // keep the transport counters accurate without touching the timeline.
-    void note_rejected(uint32_t seq, bool discontinuity) {
-        (void)seq;
-        (void)discontinuity;
+    // Used when the denoiser has rejected a packet before push_float; keep the
+    // transport counters accurate without touching the timeline.
+    void note_rejected() {
         packets_received_.fetch_add(1, std::memory_order_relaxed);
         packets_late_.fetch_add(1, std::memory_order_relaxed);
     }
