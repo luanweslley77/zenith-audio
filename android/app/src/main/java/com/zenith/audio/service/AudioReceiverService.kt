@@ -67,7 +67,9 @@ class AudioReceiverService : Service() {
             sendAudioPacket = { data -> receiver?.sendMicAudio(data) },
             sendControlPacket = { data -> receiver?.sendRaw(data) }
         ).apply {
-            applySettings(readMicSettings(), restartIfRecording = false)
+            val resolved = resolveMicSettings(readMicSettings())
+            applySettings(resolved, restartIfRecording = false)
+            persistMicSettings(resolved)
         }
         serverDiscovery = com.zenith.audio.network.ServerDiscovery(this)
         serverDiscovery.startDiscovery()
@@ -206,15 +208,22 @@ class AudioReceiverService : Service() {
     fun getMicInputDevices(): List<MicInputDevice> = micRecorder?.getInputDevices() ?: emptyList()
 
     fun applyMicSettings(settings: MicSettings) {
+        val resolved = micRecorder?.resolveMicSettings(settings) ?: settings
+        persistMicSettings(resolved)
+        micRecorder?.applySettings(resolved)
+        Log.i(TAG, "Mic settings: source=${resolved.sourceMode} input=${resolved.inputDeviceId} " +
+                "address=${resolved.inputDeviceAddress} gain=${resolved.gainDb}dB " +
+                "ns=${resolved.noiseSuppressionPercent}%")
+    }
+
+    private fun persistMicSettings(settings: MicSettings) {
         getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE).edit()
             .putString("mic_source_mode", settings.sourceMode.name)
             .putInt("mic_input_device_id", settings.inputDeviceId)
+            .putString("mic_input_device_address", settings.inputDeviceAddress)
             .putFloat("mic_gain_db", settings.gainDb)
             .putInt("mic_ns_percent", settings.noiseSuppressionPercent)
             .apply()
-        micRecorder?.applySettings(settings)
-        Log.i(TAG, "Mic settings: source=${settings.sourceMode} input=${settings.inputDeviceId} " +
-                "gain=${settings.gainDb}dB ns=${settings.noiseSuppressionPercent}%")
     }
 
     private fun readMicSettings(): MicSettings {
@@ -226,7 +235,8 @@ class AudioReceiverService : Service() {
             noiseSuppressionPercent = prefs.getInt(
                 "mic_ns_percent",
                 MicSettings.DEFAULT_NOISE_SUPPRESSION_PERCENT
-            )
+            ),
+            inputDeviceAddress = prefs.getString("mic_input_device_address", "") ?: ""
         )
     }
 

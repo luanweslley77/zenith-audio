@@ -1764,6 +1764,9 @@ private fun MicSettingsDialog(
 ) {
     var sourceMode by remember(initialSettings) { mutableStateOf(initialSettings.sourceMode) }
     var inputDeviceId by remember(initialSettings) { mutableIntStateOf(initialSettings.inputDeviceId) }
+    var inputDeviceAddress by remember(initialSettings) {
+        mutableStateOf(initialSettings.inputDeviceAddress)
+    }
     var gainDb by remember(initialSettings) { mutableFloatStateOf(initialSettings.gainDb) }
     var nsPercent by remember(initialSettings) {
         mutableIntStateOf(initialSettings.noiseSuppressionPercent)
@@ -1810,6 +1813,12 @@ private fun MicSettingsDialog(
                     fontSize = 10.sp,
                     color = Color(0xFFAAAAAA)
                 )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Android exposes the physical mics (Built-in mic, Back mic) and virtual routes (Telephony, Input). The details show the address, id, maximum sample rate and channels. Bottom is usually the primary voice mic; Back is the rear/secondary one. The selected address is remembered across reboots.",
+                    fontSize = 10.sp,
+                    color = Color(0xFF888888)
+                )
 
                 Spacer(modifier = Modifier.height(14.dp))
                 Text(
@@ -1821,16 +1830,40 @@ private fun MicSettingsDialog(
                 Spacer(modifier = Modifier.height(6.dp))
                 FilterChip(
                     selected = inputDeviceId < 0,
-                    onClick = { inputDeviceId = MicSettings.DEFAULT_INPUT_DEVICE },
+                    onClick = {
+                        inputDeviceId = MicSettings.DEFAULT_INPUT_DEVICE
+                        inputDeviceAddress = ""
+                    },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Built-in mic (recommended)", fontSize = 11.sp) }
+                    label = {
+                        Column {
+                            Text("Built-in mic (recommended)", fontSize = 11.sp)
+                            Text(
+                                "Auto: bottom / primary microphone",
+                                fontSize = 9.sp,
+                                color = Color(0xFF888888)
+                            )
+                        }
+                    }
                 )
                 devices.forEach { device ->
                     FilterChip(
                         selected = inputDeviceId == device.id,
-                        onClick = { inputDeviceId = device.id },
+                        onClick = {
+                            inputDeviceId = device.id
+                            inputDeviceAddress = device.address
+                        },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text(device.name, fontSize = 11.sp) }
+                        label = {
+                            Column {
+                                Text(device.name, fontSize = 11.sp)
+                                Text(
+                                    device.details,
+                                    fontSize = 9.sp,
+                                    color = Color(0xFF888888)
+                                )
+                            }
+                        }
                     )
                 }
                 if (devices.isEmpty()) {
@@ -1903,12 +1936,19 @@ private fun MicSettingsDialog(
         },
         confirmButton = {
             TextButton(onClick = {
+                val resolvedAddress = if (inputDeviceId >= 0) {
+                    devices.firstOrNull { it.id == inputDeviceId }?.address
+                        ?: inputDeviceAddress
+                } else {
+                    ""
+                }
                 onApply(
                     MicSettings(
                         sourceMode = sourceMode,
                         inputDeviceId = inputDeviceId,
                         gainDb = gainDb,
-                        noiseSuppressionPercent = nsPercent
+                        noiseSuppressionPercent = nsPercent,
+                        inputDeviceAddress = resolvedAddress
                     )
                 )
             }) {

@@ -46,7 +46,8 @@ data class MicSettings(
     val sourceMode: MicSourceMode = MicSourceMode.UNPROCESSED,
     val inputDeviceId: Int = DEFAULT_INPUT_DEVICE,
     val gainDb: Float = DEFAULT_GAIN_DB,
-    val noiseSuppressionPercent: Int = DEFAULT_NOISE_SUPPRESSION_PERCENT
+    val noiseSuppressionPercent: Int = DEFAULT_NOISE_SUPPRESSION_PERCENT,
+    val inputDeviceAddress: String = ""
 ) {
     companion object {
         const val DEFAULT_INPUT_DEVICE = -1
@@ -62,7 +63,11 @@ data class MicSettings(
 data class MicInputDevice(
     val id: Int,
     val name: String,
-    val type: Int
+    val details: String,
+    val address: String,
+    val type: Int,
+    val isRecommended: Boolean,
+    val isVirtual: Boolean
 )
 
 class MicAudioRecorder(
@@ -120,7 +125,8 @@ class MicAudioRecorder(
         }
 
         val sourceChanged = previous.sourceMode != sanitized.sourceMode
-        val deviceChanged = previous.inputDeviceId != sanitized.inputDeviceId
+        val deviceChanged = previous.inputDeviceId != sanitized.inputDeviceId ||
+            previous.inputDeviceAddress != sanitized.inputDeviceAddress
         if (restartIfRecording && running.get() && (sourceChanged || deviceChanged)) {
             Log.i(TAG, "Mic settings changed; restarting capture")
             stop()
@@ -135,13 +141,46 @@ class MicAudioRecorder(
             audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
                 .asSequence()
                 .filter { it.isSource }
-                .map { MicInputDevice(it.id, deviceLabel(it), it.type) }
+                .filterNot { isNonMicrophoneRoute(it) }
+                .map { device ->
+                    val typeLabel = deviceTypeLabel(device)
+                    val address = safeAddress(device)
+                    val product = safeProductName(device)
+                    val recommended = device.type == AudioDeviceInfo.TYPE_BUILTIN_MIC &&
+                        address.contains("bottom", ignoreCase = true)
+                    val virtual = device.type == AudioDeviceInfo.TYPE_TELEPHONY
+                    MicInputDevice(
+                        id = device.id,
+                        name = buildDeviceName(typeLabel, address, product),
+                        details = buildDeviceDetails(device, product, virtual),
+                        address = address,
+                        type = device.type,
+                        isRecommended = recommended,
+                        isVirtual = virtual
+                    )
+                }
                 .distinctBy { it.id }
+                .sortedWith(
+                    compareByDescending<MicInputDevice> { it.isRecommended }
+                        .thenBy { it.isVirtual }
+                        .thenBy { it.name }
+                )
                 .toList()
         } catch (e: Exception) {
             Log.w(TAG, "Could not enumerate input devices", e)
             emptyList()
         }
+    }
+
+    // Resolve a stored device id to its physical address. Audio device ids can
+    // change after a reboot, but the address (bottom/back) is stable.
+    fun resolveMicSettings(settings: MicSettings): MicSettings {
+        if (settings.inputDeviceAddress.isNotBlank() || settings.inputDeviceId < 0) {
+            return settings
+        }
+        val device = getInputDevices().firstOrNull { it.id == settings.inputDeviceId }
+            ?: return settings
+        return settings.copy(inputDeviceAddress = device.address)
     }
 
     fun start(): Boolean {
@@ -398,27 +437,37 @@ class MicAudioRecorder(
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             ?: return null
         val devices = try {
-            audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).filter { it.isSource }
+            audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                .filter { it.isSource && !isNonMicrophoneRoute(it) }
         } catch (_: Exception) {
             return null
         }
 
         val requestedId = _settings.value.inputDeviceId
         if (requestedId >= 0) {
-            return devices.firstOrNull { it.id == requestedId }
+            devices.firstOrNull { it.id == requestedId }?.let { return it }
         }
 
-        // Default to the phone's own microphone. A wired/Bluetooth headset mic
-        // is often narrowband or noisy, and Android's communication route can
-        // silently switch to it when a headset is connected.
-        val builtIns = devices.filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
-        return builtIns.firstOrNull { device ->
-            try {
-                device.address.contains("bottom", ignoreCase = true)
-            } catch (_: Exception) {
-                false
-            }
-        } ?: builtIns.firstOrNull()
+        // The id can change after a reboot. The physical address (bottom/back)
+        // is stable, so use it as the first fallback.
+        val requestedAddress = _settings.value.inputDeviceAddress
+        if (requestedAddress.isNotBlank()) {
+            devices.firstOrNull {
+                safeAddress(it).equals(requestedAddress, ignoreCase = true)
+            }?.let { return it }
+        }
+
+        // Default to the phone's own primary (bottom) microphone. A
+        // wired/Bluetooth headset mic is often narrowband or noisy, and the
+        // communication route can silently switch to it when a headset is
+        // connected.
+        return devices.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC &&
+                safeAddress(it).contains("bottom", ignoreCase = true)
+        }
+            ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+            ?: devices.firstOrNull { safeAddress(it).contains("back", ignoreCase = true) }
+            ?: devices.firstOrNull()
     }
 
     private fun sourceLabel(source: Int): String = when (source) {
@@ -429,35 +478,100 @@ class MicAudioRecorder(
         else -> "SOURCE $source"
     }
 
-    private fun deviceLabel(device: AudioDeviceInfo): String {
-        val type = when {
-            device.type == AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in mic"
-            device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headset"
-            device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth"
-            device.type == AudioDeviceInfo.TYPE_USB_DEVICE -> "USB"
-            device.type == AudioDeviceInfo.TYPE_USB_HEADSET -> "USB headset"
-            device.type == AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB accessory"
-            device.type == AudioDeviceInfo.TYPE_LINE_ANALOG -> "Line in"
-            device.type == AudioDeviceInfo.TYPE_LINE_DIGITAL -> "Digital in"
-            device.type == AudioDeviceInfo.TYPE_TELEPHONY -> "Telephony"
-            device.type == AudioDeviceInfo.TYPE_DOCK -> "Dock"
-            device.type == AudioDeviceInfo.TYPE_HDMI -> "HDMI"
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                device.type == AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE headset"
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                device.type == AudioDeviceInfo.TYPE_BLE_SPEAKER -> "BLE speaker"
-            else -> "Input"
-        }
-        val product = try {
-            device.productName?.toString()?.trim().orEmpty()
+    private fun deviceLabel(device: AudioDeviceInfo): String =
+        buildDeviceName(deviceTypeLabel(device), safeAddress(device), safeProductName(device))
+
+    private fun deviceTypeLabel(device: AudioDeviceInfo): String = when {
+        // AudioDeviceInfo does not expose a public BACK_MIC type; the back
+        // microphone is reported as a built-in mic with address "back".
+        safeAddress(device).contains("back", ignoreCase = true) -> "Back mic"
+        device.type == AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in mic"
+        device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headset"
+        device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth"
+        device.type == AudioDeviceInfo.TYPE_USB_DEVICE -> "USB"
+        device.type == AudioDeviceInfo.TYPE_USB_HEADSET -> "USB headset"
+        device.type == AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB accessory"
+        device.type == AudioDeviceInfo.TYPE_LINE_ANALOG -> "Line in"
+        device.type == AudioDeviceInfo.TYPE_LINE_DIGITAL -> "Digital in"
+        device.type == AudioDeviceInfo.TYPE_TELEPHONY -> "Telephony"
+        device.type == AudioDeviceInfo.TYPE_DOCK -> "Dock"
+        device.type == AudioDeviceInfo.TYPE_HDMI -> "HDMI"
+        device.type == AudioDeviceInfo.TYPE_IP -> "IP input"
+        device.type == AudioDeviceInfo.TYPE_BUS -> "Bus input"
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            device.type == AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE headset"
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            device.type == AudioDeviceInfo.TYPE_BLE_SPEAKER -> "BLE speaker"
+        else -> "Input"
+    }
+
+    private fun safeAddress(device: AudioDeviceInfo): String {
+        val raw = try {
+            device.address.trim()
         } catch (_: Exception) {
             ""
         }
-        return if (product.isNotEmpty() && !product.equals(type, ignoreCase = true)) {
-            "$type · $product"
-        } else {
-            type
+        // Some virtual routes report "0" as their address; treat it as empty.
+        return if (raw == "0") "" else raw
+    }
+
+    private fun safeProductName(device: AudioDeviceInfo): String = try {
+        device.productName?.toString()?.trim().orEmpty()
+    } catch (_: Exception) {
+        ""
+    }
+
+    private fun buildDeviceName(typeLabel: String, address: String, product: String): String {
+        val suffix = when {
+            address.isNotBlank() -> address
+            product.isNotBlank() && !product.equals(typeLabel, ignoreCase = true) -> product
+            else -> ""
         }
+        return if (suffix.isNotBlank()) "$typeLabel · $suffix" else typeLabel
+    }
+
+    private fun buildDeviceDetails(
+        device: AudioDeviceInfo,
+        product: String,
+        virtual: Boolean
+    ): String {
+        val parts = mutableListOf<String>()
+        parts.add("id ${device.id}")
+
+        val maxRate = try {
+            device.sampleRates.maxOrNull()
+        } catch (_: Exception) {
+            null
+        }
+        if (maxRate != null && maxRate > 0) {
+            parts.add("${maxRate / 1000} kHz")
+        }
+
+        val maxChannels = try {
+            device.channelCounts.maxOrNull()
+        } catch (_: Exception) {
+            null
+        }
+        if (maxChannels != null && maxChannels > 0) {
+            parts.add(if (maxChannels == 1) "mono" else "$maxChannels ch")
+        }
+
+        if (product.isNotBlank()) parts.add(product)
+        if (virtual) parts.add("virtual route")
+        return parts.joinToString(" · ")
+    }
+
+    private fun isNonMicrophoneRoute(device: AudioDeviceInfo): Boolean {
+        val address = safeAddress(device)
+        if (address.contains("echo", ignoreCase = true) ||
+            address.contains("reference", ignoreCase = true)
+        ) {
+            return true
+        }
+        if (device.type == AudioDeviceInfo.TYPE_REMOTE_SUBMIX) return true
+        if (device.type == AudioDeviceInfo.TYPE_FM_TUNER) return true
+        if (device.type == AudioDeviceInfo.TYPE_TV_TUNER) return true
+        return false
     }
 
     private fun softLimit(x: Float): Float {
