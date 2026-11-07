@@ -51,4 +51,4 @@ The PC-to-phone audio and the phone-to-PC microphone are independent paths. A cl
 - **Frame Size**: 480 samples (10 milliseconds)
 - **Opus Application**: `OPUS_APPLICATION_RESTRICTED_LOWDELAY`
 - **Bitrate**: 320,000 bps (320 kbps) default
-- **Port**: UDP 8088
+- **Port**: UDP 59100
