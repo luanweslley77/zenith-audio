@@ -7,12 +7,17 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.zenith.audio.MainActivity
+import com.zenith.audio.mic.MicInputDevice
+import com.zenith.audio.mic.MicSettings
+import com.zenith.audio.mic.MicSourceMode
 import com.zenith.audio.model.ConnectionState
 import com.zenith.audio.model.StreamMetrics
 import com.zenith.audio.network.UdpAudioReceiver
@@ -32,6 +37,7 @@ class AudioReceiverService : Service() {
 
         private const val CHANNEL_ID = "zenith_audio_stream_channel"
         private const val NOTIFICATION_ID = 1001
+        private const val TAG = "AudioReceiverService"
     }
 
     private val binder = LocalBinder()
@@ -43,6 +49,7 @@ class AudioReceiverService : Service() {
     private var aoaDacManager: com.zenith.audio.usb.AoaDacManager? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var metricsCollectorJob: Job? = null
 
@@ -55,8 +62,12 @@ class AudioReceiverService : Service() {
     override fun onCreate() {
         super.onCreate()
         receiver = UdpAudioReceiver(this)
-        micRecorder = com.zenith.audio.mic.MicAudioRecorder(this) { data ->
-            receiver?.sendRaw(data)
+        micRecorder = com.zenith.audio.mic.MicAudioRecorder(
+            context = this,
+            sendAudioPacket = { data -> receiver?.sendMicAudio(data) },
+            sendControlPacket = { data -> receiver?.sendRaw(data) }
+        ).apply {
+            applySettings(readMicSettings(), restartIfRecording = false)
         }
         serverDiscovery = com.zenith.audio.network.ServerDiscovery(this)
         serverDiscovery.startDiscovery()
@@ -128,6 +139,9 @@ class AudioReceiverService : Service() {
 
     val isMicRecording: StateFlow<Boolean>? get() = micRecorder?.isRecording
     val micLevel: StateFlow<Float>? get() = micRecorder?.micLevel
+    val micSettings: StateFlow<MicSettings>? get() = micRecorder?.settings
+    val micRoutedDevice: StateFlow<String>? get() = micRecorder?.routedDevice
+    val micActiveSource: StateFlow<String>? get() = micRecorder?.activeSource
 
     val isCallDuckingEnabled: StateFlow<Boolean>? get() = callDuckingManager?.isDuckingEnabled
     val isCallActive: StateFlow<Boolean>? get() = callDuckingManager?.isCallActive
@@ -179,6 +193,7 @@ class AudioReceiverService : Service() {
     fun toggleMic(enable: Boolean): Boolean {
         val mic = micRecorder ?: return false
         return if (enable) {
+            mic.applySettings(readMicSettings(), restartIfRecording = false)
             mic.start()
         } else {
             mic.stop()
@@ -186,7 +201,59 @@ class AudioReceiverService : Service() {
         }
     }
 
+    fun getMicSettings(): MicSettings = micRecorder?.settings?.value ?: readMicSettings()
+
+    fun getMicInputDevices(): List<MicInputDevice> = micRecorder?.getInputDevices() ?: emptyList()
+
+    fun applyMicSettings(settings: MicSettings) {
+        getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE).edit()
+            .putString("mic_source_mode", settings.sourceMode.name)
+            .putInt("mic_input_device_id", settings.inputDeviceId)
+            .putFloat("mic_gain_db", settings.gainDb)
+            .apply()
+        micRecorder?.applySettings(settings)
+        Log.i(TAG, "Mic settings: source=${settings.sourceMode} input=${settings.inputDeviceId} gain=${settings.gainDb}dB")
+    }
+
+    private fun readMicSettings(): MicSettings {
+        val prefs = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
+        return MicSettings(
+            sourceMode = MicSourceMode.fromStored(prefs.getString("mic_source_mode", null)),
+            inputDeviceId = prefs.getInt("mic_input_device_id", MicSettings.DEFAULT_INPUT_DEVICE),
+            gainDb = prefs.getFloat("mic_gain_db", MicSettings.DEFAULT_GAIN_DB)
+        )
+    }
+
+    private fun acquireWifiLock() {
+        if (wifiLock?.isHeld == true) return
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            ?: return
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            @Suppress("DEPRECATION")
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        try {
+            wifiLock = wifiManager.createWifiLock(mode, "ZenithAudio::StreamWifiLock").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            Log.i(TAG, "High-performance Wi-Fi lock acquired")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire Wi-Fi lock", e)
+        }
+    }
+
+    private fun releaseWifiLock() {
+        try {
+            wifiLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) {}
+        wifiLock = null
+    }
+
     private fun startStreaming(ip: String, port: Int, bitrate: Int) {
+        acquireWifiLock()
         failoverManager?.updateWifiServerIp(ip)
         failoverManager?.setStreamingActive(true)
 
@@ -245,10 +312,12 @@ class AudioReceiverService : Service() {
         }
 
         receiver?.stop()
+        releaseWifiLock()
     }
 
     override fun onDestroy() {
         stopStreaming()
+        releaseWifiLock()
         serverDiscovery.stopDiscovery()
         callDuckingManager?.stop()
         failoverManager?.stop()

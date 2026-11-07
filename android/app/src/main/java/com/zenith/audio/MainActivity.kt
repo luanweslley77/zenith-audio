@@ -36,6 +36,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.zenith.audio.mic.MicInputDevice
+import com.zenith.audio.mic.MicSettings
+import com.zenith.audio.mic.MicSourceMode
 import com.zenith.audio.model.ConnectionState
 import com.zenith.audio.model.StreamMetrics
 import com.zenith.audio.protocol.ZapProtocol
@@ -51,6 +54,9 @@ class MainActivity : ComponentActivity() {
     private val discoveredServersState = mutableStateOf<List<ZapProtocol.DiscoveredServer>>(emptyList())
     private val isMicRecordingState = mutableStateOf(false)
     private val micLevelState = mutableStateOf(0f)
+    private val micRoutedDeviceState = mutableStateOf("")
+    private val micActiveSourceState = mutableStateOf("")
+    private val showMicSettingsState = mutableStateOf(false)
     private val isCallDuckingEnabledState = mutableStateOf(true)
     private val isCallActiveState = mutableStateOf(false)
     private val isAoaEnabledState = mutableStateOf(false)
@@ -135,6 +141,22 @@ class MainActivity : ComponentActivity() {
                 lifecycleScope.launch {
                     flow.collectLatest { level ->
                         micLevelState.value = level
+                    }
+                }
+            }
+
+            service.micRoutedDevice?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { device ->
+                        micRoutedDeviceState.value = device
+                    }
+                }
+            }
+
+            service.micActiveSource?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { source ->
+                        micActiveSourceState.value = source
                     }
                 }
             }
@@ -292,6 +314,7 @@ class MainActivity : ComponentActivity() {
                                 audioService?.toggleMic(enable)
                             }
                         },
+                        onOpenMicSettings = { showMicSettingsState.value = true },
                         onTogglePcAudio = { enabled ->
                             pcAudioEnabledState.value = enabled
                             prefs.edit().putBoolean("pc_audio_enabled", enabled).apply()
@@ -303,6 +326,22 @@ class MainActivity : ComponentActivity() {
                             audioService?.setPhoneOnly(enabled)
                         }
                     )
+
+                    if (showMicSettingsState.value) {
+                        val initialMicSettings = remember { audioService?.getMicSettings() ?: MicSettings() }
+                        val inputDevices = remember { audioService?.getMicInputDevices() ?: emptyList() }
+                        MicSettingsDialog(
+                            initialSettings = initialMicSettings,
+                            devices = inputDevices,
+                            routedDevice = micRoutedDeviceState.value,
+                            activeSource = micActiveSourceState.value,
+                            onDismiss = { showMicSettingsState.value = false },
+                            onApply = { settings ->
+                                audioService?.applyMicSettings(settings)
+                                showMicSettingsState.value = false
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -410,6 +449,7 @@ fun ZenithAudioScreen(
     onToggleCallDucking: (Boolean) -> Unit,
     onToggleAoa: (Boolean) -> Unit,
     onToggleMic: (Boolean) -> Unit,
+    onOpenMicSettings: () -> Unit,
     onTogglePcAudio: (Boolean) -> Unit,
     onTogglePhoneOnly: (Boolean) -> Unit
 ) {
@@ -1008,7 +1048,10 @@ fun ZenithAudioScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Icon(
                             imageVector = if (isMicRecording) Icons.Default.Mic else Icons.Default.MicOff,
                             contentDescription = null,
@@ -1031,23 +1074,37 @@ fun ZenithAudioScreen(
                         }
                     }
 
-                    // Independent Mic Toggle Button
-                    Button(
-                        onClick = {
-                            onToggleMic(!isMicRecording)
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isMicRecording) Color(0xFFFF5252) else Color(0xFF2E7D32),
-                            contentColor = Color.White
-                        ),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = if (isMicRecording) "TURN OFF" else "TURN ON",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = onOpenMicSettings,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Microphone settings",
+                                tint = Color(0xFFB0B0B0),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        // Independent Mic Toggle Button
+                        Button(
+                            onClick = {
+                                onToggleMic(!isMicRecording)
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isMicRecording) Color(0xFFFF5252) else Color(0xFF2E7D32),
+                                contentColor = Color.White
+                            ),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = if (isMicRecording) "TURN OFF" else "TURN ON",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
 
@@ -1694,4 +1751,143 @@ fun MetricCard(
             )
         }
     }
+}
+
+@Composable
+private fun MicSettingsDialog(
+    initialSettings: MicSettings,
+    devices: List<MicInputDevice>,
+    routedDevice: String,
+    activeSource: String,
+    onDismiss: () -> Unit,
+    onApply: (MicSettings) -> Unit
+) {
+    var sourceMode by remember(initialSettings) { mutableStateOf(initialSettings.sourceMode) }
+    var inputDeviceId by remember(initialSettings) { mutableIntStateOf(initialSettings.inputDeviceId) }
+    var gainDb by remember(initialSettings) { mutableFloatStateOf(initialSettings.gainDb) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "MIC SETTINGS",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "CAPTURE MODE",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFAAAAAA)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = sourceMode == MicSourceMode.RAW,
+                        onClick = { sourceMode = MicSourceMode.RAW },
+                        label = { Text("RAW", fontSize = 11.sp) }
+                    )
+                    FilterChip(
+                        selected = sourceMode == MicSourceMode.VOICE_CALL,
+                        onClick = { sourceMode = MicSourceMode.VOICE_CALL },
+                        label = { Text("CALL", fontSize = 11.sp) }
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "RAW bypasses Android call filters (noise suppression, AGC and echo cancellation). It is the best choice with headphones, mic-only mode and Discord/Krisp. CALL is the processed route for speaker use.",
+                    fontSize = 10.sp,
+                    color = Color(0xFFAAAAAA)
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = "INPUT DEVICE",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFAAAAAA)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                FilterChip(
+                    selected = inputDeviceId < 0,
+                    onClick = { inputDeviceId = MicSettings.DEFAULT_INPUT_DEVICE },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Built-in mic (recommended)", fontSize = 11.sp) }
+                )
+                devices.forEach { device ->
+                    FilterChip(
+                        selected = inputDeviceId == device.id,
+                        onClick = { inputDeviceId = device.id },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(device.name, fontSize = 11.sp) }
+                    )
+                }
+                if (devices.isEmpty()) {
+                    Text(
+                        text = "No input devices reported by Android.",
+                        fontSize = 10.sp,
+                        color = Color(0xFF888888)
+                    )
+                }
+
+                if (routedDevice.isNotBlank() || activeSource.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = buildString {
+                            if (activeSource.isNotBlank()) append("Source: $activeSource")
+                            if (routedDevice.isNotBlank()) {
+                                if (isNotEmpty()) append("  ·  ")
+                                append("Route: $routedDevice")
+                            }
+                        },
+                        fontSize = 10.sp,
+                        color = Color(0xFF00E676)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = "GAIN  ${gainDb.toInt()} dB",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFAAAAAA)
+                )
+                Slider(
+                    value = gainDb,
+                    onValueChange = { gainDb = it },
+                    valueRange = MicSettings.MIN_GAIN_DB..MicSettings.MAX_GAIN_DB
+                )
+                Text(
+                    text = "An 80 Hz high-pass filter and a soft limiter are always applied. Changing mode or input restarts the microphone.",
+                    fontSize = 10.sp,
+                    color = Color(0xFF888888)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "If cuts persist, set the Zenith app to \"No restrictions\" in Android battery settings (MIUI is aggressive with background audio).",
+                    fontSize = 10.sp,
+                    color = Color(0xFF888888)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onApply(MicSettings(sourceMode, inputDeviceId, gainDb))
+            }) {
+                Text("APPLY")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL")
+            }
+        }
+    )
 }

@@ -18,6 +18,8 @@ import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class UdpAudioReceiver(private val context: Context) {
@@ -27,6 +29,7 @@ class UdpAudioReceiver(private val context: Context) {
     }
 
     private val netIoExecutor = Executors.newSingleThreadExecutor()
+    private val micSendQueue = LinkedBlockingQueue<ByteArray>(16)
 
     private val _metrics = MutableStateFlow(StreamMetrics())
     val metrics: StateFlow<StreamMetrics> = _metrics.asStateFlow()
@@ -35,9 +38,15 @@ class UdpAudioReceiver(private val context: Context) {
     private var rxThread: Thread? = null
     private var playThread: Thread? = null
     private var telemetryThread: Thread? = null
+    private var micSendThread: Thread? = null
 
+    @Volatile
     private var socket: DatagramSocket? = null
+
+    @Volatile
     private var serverAddress: InetAddress? = null
+
+    @Volatile
     private var serverPort: Int = ZapProtocol.DEFAULT_PORT
 
     private val jitterBuffer = AdaptiveJitterBuffer()
@@ -85,6 +94,10 @@ class UdpAudioReceiver(private val context: Context) {
         }
 
         isRunning.set(true)
+        micSendThread = Thread({ micSendLoop() }, "Zenith-Mic-Tx").apply {
+            priority = Thread.MAX_PRIORITY
+            start()
+        }
         lastPacketTimeNs = System.nanoTime()
         hasReceivedServerPacket = false
         lastReportedState = null
@@ -115,6 +128,11 @@ class UdpAudioReceiver(private val context: Context) {
         try {
             socket?.close()
         } catch (_: Exception) {}
+
+        micSendQueue.clear()
+        micSendThread?.interrupt()
+        micSendThread?.join(500)
+        micSendThread = null
 
         rxThread?.join(500)
         playThread?.join(500)
@@ -291,6 +309,41 @@ class UdpAudioReceiver(private val context: Context) {
                 Log.e(TAG, "sendRaw failed to $addr:$serverPort", e)
             }
         }
+    }
+
+    /**
+     * Microphone frames get their own high-priority sender instead of sharing
+     * the ping/control executor. If the queue backs up, the oldest frame is
+     * dropped so latency cannot grow without bound.
+     */
+    fun sendMicAudio(data: ByteArray) {
+        if (!isRunning.get()) return
+        if (!micSendQueue.offer(data)) {
+            micSendQueue.poll()
+            micSendQueue.offer(data)
+        }
+    }
+
+    private fun micSendLoop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        while (isRunning.get()) {
+            val data = try {
+                micSendQueue.poll(200, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                break
+            } ?: continue
+
+            val s = socket ?: continue
+            val addr = serverAddress ?: continue
+            try {
+                s.send(DatagramPacket(data, data.size, addr, serverPort))
+            } catch (e: Exception) {
+                if (isRunning.get()) {
+                    Log.e(TAG, "mic send failed to $addr:$serverPort", e)
+                }
+            }
+        }
+        micSendQueue.clear()
     }
 
     private fun rxLoop() {

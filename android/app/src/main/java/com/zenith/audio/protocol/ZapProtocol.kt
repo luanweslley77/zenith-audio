@@ -210,7 +210,13 @@ object ZapProtocol {
         return buf.array()
     }
 
-    fun buildMicAudioPacket(seq: Int, audioData: ByteArray, size: Int, isPcm: Boolean = true): ByteArray {
+    fun buildMicAudioPacket(
+        seq: Int,
+        audioData: ByteArray,
+        size: Int,
+        isPcm: Boolean = true,
+        isDiscontinuity: Boolean = false
+    ): ByteArray {
         val buf = ByteBuffer.allocate(HEADER_SIZE + size).order(ByteOrder.BIG_ENDIAN)
         buf.putShort(MAGIC)
         buf.put(VERSION)
@@ -218,7 +224,9 @@ object ZapProtocol {
         buf.putInt(seq)
         buf.putLong(System.nanoTime() / 1000L)
         buf.putShort(size.toShort())
-        buf.putShort(if (isPcm) FLAG_MIC_PCM else FLAG_NONE)
+        var flags = if (isPcm) FLAG_MIC_PCM.toInt() else FLAG_NONE.toInt()
+        if (isDiscontinuity) flags = flags or FLAG_DISCONTINUITY.toInt()
+        buf.putShort(flags.toShort())
         buf.put(audioData, 0, size)
         return buf.array()
     }
