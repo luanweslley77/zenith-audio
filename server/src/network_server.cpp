@@ -194,6 +194,10 @@ void NetworkServer::rx_thread_main() {
         if (now_us - last_bcast_us > 2'000'000ULL) { // Broadcast beacon every 2s
             broadcast_discovery_beacon();
             last_bcast_us = now_us;
+            // Run the timeout sweep even when no client packet arrives. This
+            // releases a PC mute left behind by a client that crashed and
+            // keeps the client count accurate.
+            cleanup_stale_clients();
         }
 
         ssize_t n = recvfrom(sockfd_, rx_buf, sizeof(rx_buf), 0,
@@ -269,7 +273,7 @@ void NetworkServer::cleanup_stale_clients() {
         // The phone that requested phone-only output is gone. Do not leave the
         // PC silent with no client receiving the audio.
         system("wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 >/dev/null 2>&1 &");
-        std::cout << "[Network] PC speakers restored after mute owner disconnected.\n";
+        std::cout << "[Network] PC speakers restored after mute owner disconnected.\n" << std::flush;
     }
 }
 
@@ -283,8 +287,22 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
         return; // Ignore unknown or malformed packets
     }
 
-    update_or_add_client(src_addr);
     cleanup_stale_clients();
+
+    // Only packets that belong to an actual client session create/refresh a
+    // client. Discovery probes and discovery beacons must not subscribe the
+    // sender to the audio stream: the phone's discovery socket is ephemeral,
+    // and beacons also loop back to the server itself.
+    switch (hdr.type) {
+        case zap::PKT_PING:
+        case zap::PKT_CLIENT_FEEDBACK:
+        case zap::PKT_CONTROL_REQ:
+        case zap::PKT_MIC_AUDIO_FRAME:
+            update_or_add_client(src_addr);
+            break;
+        default:
+            break;
+    }
 
     const uint8_t *payload = buffer + sizeof(zap::Header);
     size_t payload_len = size - sizeof(zap::Header);
@@ -387,7 +405,7 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                         }
                     }
                     std::cout << "[Network] Client PC audio to phone: "
-                              << (wants_audio ? "RESUMED" : "PAUSED") << "\n";
+                              << (wants_audio ? "RESUMED" : "PAUSED") << "\n" << std::flush;
                 } else if (ctrl.command == zap::CMD_SET_PC_MUTE) {
                     bool mute = (ctrl.param16 == 1);
                     {
@@ -406,7 +424,7 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                              mute ? 1 : 0);
                     system(cmd);
                     std::cout << "[Network] Client PC speaker mute: "
-                              << (mute ? "ON" : "OFF") << "\n";
+                              << (mute ? "ON" : "OFF") << "\n" << std::flush;
                 }
 
                 if (control_cb_) {
