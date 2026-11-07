@@ -210,9 +210,11 @@ class AudioReceiverService : Service() {
             .putString("mic_source_mode", settings.sourceMode.name)
             .putInt("mic_input_device_id", settings.inputDeviceId)
             .putFloat("mic_gain_db", settings.gainDb)
+            .putInt("mic_ns_percent", settings.noiseSuppressionPercent)
             .apply()
         micRecorder?.applySettings(settings)
-        Log.i(TAG, "Mic settings: source=${settings.sourceMode} input=${settings.inputDeviceId} gain=${settings.gainDb}dB")
+        Log.i(TAG, "Mic settings: source=${settings.sourceMode} input=${settings.inputDeviceId} " +
+                "gain=${settings.gainDb}dB ns=${settings.noiseSuppressionPercent}%")
     }
 
     private fun readMicSettings(): MicSettings {
@@ -220,7 +222,11 @@ class AudioReceiverService : Service() {
         return MicSettings(
             sourceMode = MicSourceMode.fromStored(prefs.getString("mic_source_mode", null)),
             inputDeviceId = prefs.getInt("mic_input_device_id", MicSettings.DEFAULT_INPUT_DEVICE),
-            gainDb = prefs.getFloat("mic_gain_db", MicSettings.DEFAULT_GAIN_DB)
+            gainDb = prefs.getFloat("mic_gain_db", MicSettings.DEFAULT_GAIN_DB),
+            noiseSuppressionPercent = prefs.getInt(
+                "mic_ns_percent",
+                MicSettings.DEFAULT_NOISE_SUPPRESSION_PERCENT
+            )
         )
     }
 

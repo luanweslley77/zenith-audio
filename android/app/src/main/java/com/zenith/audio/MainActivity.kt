@@ -1765,6 +1765,9 @@ private fun MicSettingsDialog(
     var sourceMode by remember(initialSettings) { mutableStateOf(initialSettings.sourceMode) }
     var inputDeviceId by remember(initialSettings) { mutableIntStateOf(initialSettings.inputDeviceId) }
     var gainDb by remember(initialSettings) { mutableFloatStateOf(initialSettings.gainDb) }
+    var nsPercent by remember(initialSettings) {
+        mutableIntStateOf(initialSettings.noiseSuppressionPercent)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1865,6 +1868,26 @@ private fun MicSettingsDialog(
                     onValueChange = { gainDb = it },
                     valueRange = MicSettings.MIN_GAIN_DB..MicSettings.MAX_GAIN_DB
                 )
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "NOISE SUPPRESSION  ${nsPercent}%",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFAAAAAA)
+                )
+                Slider(
+                    value = nsPercent.toFloat(),
+                    onValueChange = { nsPercent = it.toInt() },
+                    valueRange = MicSettings.MIN_NOISE_SUPPRESSION_PERCENT.toFloat()..
+                        MicSettings.MAX_NOISE_SUPPRESSION_PERCENT.toFloat()
+                )
+                Text(
+                    text = "Runs on the PC (RNNoise). 0% disables it; higher values remove more hiss. The denoiser backs off automatically on very quiet frames so distant speech is not muted.",
+                    fontSize = 10.sp,
+                    color = Color(0xFF888888)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = "An 80 Hz high-pass filter and a soft limiter are always applied. Changing mode or input restarts the microphone.",
                     fontSize = 10.sp,
@@ -1880,7 +1903,14 @@ private fun MicSettingsDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                onApply(MicSettings(sourceMode, inputDeviceId, gainDb))
+                onApply(
+                    MicSettings(
+                        sourceMode = sourceMode,
+                        inputDeviceId = inputDeviceId,
+                        gainDb = gainDb,
+                        noiseSuppressionPercent = nsPercent
+                    )
+                )
             }) {
                 Text("APPLY")
             }

@@ -45,13 +45,17 @@ enum class MicSourceMode {
 data class MicSettings(
     val sourceMode: MicSourceMode = MicSourceMode.UNPROCESSED,
     val inputDeviceId: Int = DEFAULT_INPUT_DEVICE,
-    val gainDb: Float = DEFAULT_GAIN_DB
+    val gainDb: Float = DEFAULT_GAIN_DB,
+    val noiseSuppressionPercent: Int = DEFAULT_NOISE_SUPPRESSION_PERCENT
 ) {
     companion object {
         const val DEFAULT_INPUT_DEVICE = -1
         const val DEFAULT_GAIN_DB = 0f
         const val MIN_GAIN_DB = -12f
         const val MAX_GAIN_DB = 24f
+        const val DEFAULT_NOISE_SUPPRESSION_PERCENT = 80
+        const val MIN_NOISE_SUPPRESSION_PERCENT = 0
+        const val MAX_NOISE_SUPPRESSION_PERCENT = 100
     }
 }
 
@@ -101,11 +105,19 @@ class MicAudioRecorder(
 
     fun applySettings(newSettings: MicSettings, restartIfRecording: Boolean = true) {
         val sanitized = newSettings.copy(
-            gainDb = newSettings.gainDb.coerceIn(MicSettings.MIN_GAIN_DB, MicSettings.MAX_GAIN_DB)
+            gainDb = newSettings.gainDb.coerceIn(MicSettings.MIN_GAIN_DB, MicSettings.MAX_GAIN_DB),
+            noiseSuppressionPercent = newSettings.noiseSuppressionPercent.coerceIn(
+                MicSettings.MIN_NOISE_SUPPRESSION_PERCENT,
+                MicSettings.MAX_NOISE_SUPPRESSION_PERCENT
+            )
         )
         val previous = _settings.value
         _settings.value = sanitized
         gainDb = sanitized.gainDb
+
+        if (previous.noiseSuppressionPercent != sanitized.noiseSuppressionPercent) {
+            sendNoiseSuppression(sanitized.noiseSuppressionPercent)
+        }
 
         val sourceChanged = previous.sourceMode != sanitized.sourceMode
         val deviceChanged = previous.inputDeviceId != sanitized.inputDeviceId
@@ -179,8 +191,9 @@ class MicAudioRecorder(
             }
             _activeSource.value = sourceLabel(usedSource)
 
-            // Send mic state ON control packet.
+            // Send mic state ON and the current denoiser strength.
             sendControlPacket(ZapProtocol.buildMicStatePacket(true))
+            sendNoiseSuppression(_settings.value.noiseSuppressionPercent)
 
             recordThread = Thread({ recordLoop() }, "ZenithMicRecordThread").apply {
                 priority = Thread.MAX_PRIORITY
@@ -307,6 +320,17 @@ class MicAudioRecorder(
                 break
             }
         }
+    }
+
+    private fun sendNoiseSuppression(percent: Int) {
+        try {
+            sendControlPacket(
+                ZapProtocol.buildControlPacket(
+                    ZapProtocol.CMD_SET_MIC_NS,
+                    percent.toLong()
+                )
+            )
+        } catch (_: Exception) {}
     }
 
     private fun sourceCandidates(): List<Int> {
