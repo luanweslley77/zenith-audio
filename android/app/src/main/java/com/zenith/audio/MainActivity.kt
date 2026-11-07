@@ -1928,7 +1928,7 @@ private fun MicSettingsDialog(
                         MicSettings.MAX_NOISE_SUPPRESSION_PERCENT.toFloat()
                 )
                 Text(
-                    text = "Runs on the PC (RNNoise). 0% disables it; higher values remove more hiss. The denoiser backs off automatically on very quiet frames so distant speech is not muted.",
+                    text = "Runs on the PC (RNNoise). 0% disables it; 100% is fully denoised. UNPROCESSED usually sounds best at 0–20%; MIC usually needs 70–100%. Lower it if distant speech starts to disappear.",
                     fontSize = 10.sp,
                     color = Color(0xFF888888)
                 )
