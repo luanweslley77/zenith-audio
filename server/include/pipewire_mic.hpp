@@ -8,6 +8,7 @@
 #include <vector>
 #include <cstdint>
 #include "mic_jitter_buffer.hpp"
+#include "mic_noise_suppressor.hpp"
 
 namespace zenith {
 
@@ -34,6 +35,7 @@ private:
     std::atomic<bool> is_running_{false};
 
     OpusDecoder *opus_decoder_ = nullptr;
+    MicNoiseSuppressor noise_suppressor_;
     MicJitterBuffer jitter_buffer_;
 };
 

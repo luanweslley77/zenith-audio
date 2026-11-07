@@ -3,6 +3,15 @@ CXXFLAGS ?= -std=c++20 -O3 -Wall -Wextra -pthread -Iinclude -I../protocol $(shel
 CXXFLAGS += -MMD -MP
 LDFLAGS ?= $(shell pkg-config --libs libpipewire-0.3 opus) -pthread
 
+# Optional RNNoise noise suppression. When the development package is not
+# installed, the server still builds and simply runs without the denoiser.
+RNNOISE_CFLAGS ?= $(shell pkg-config --cflags rnnoise 2>/dev/null)
+RNNOISE_LIBS ?= $(shell pkg-config --libs rnnoise 2>/dev/null)
+ifneq ($(strip $(RNNOISE_LIBS)),)
+CXXFLAGS += -DZENITH_HAVE_RNNOISE $(RNNOISE_CFLAGS)
+LDFLAGS += $(RNNOISE_LIBS)
+endif
+
 SRCS = src/main.cpp \
        src/pipewire_capture.cpp \
        src/pipewire_mic.cpp \

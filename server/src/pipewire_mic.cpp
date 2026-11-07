@@ -142,6 +142,9 @@ void PipeWireMicSink::thread_main() {
     }
 
     std::cout << "[PipeWireMic] Registered 'Zenith Wireless Microphone' in system audio devices.\n";
+    std::cout << "[PipeWireMic] RNNoise noise suppression: "
+              << (noise_suppressor_.available() ? "ON" : "OFF")
+              << "\n" << std::flush;
     pw_main_loop_run(loop_);
 
     if (stream_) {
@@ -160,12 +163,22 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
     (void)timestamp_us;
 
     if (is_pcm) {
-        jitter_buffer_.push_pcm(data, size, seq, discontinuity);
+        size_t samples = size / sizeof(int16_t);
+        if (samples > 2048) samples = 2048;
+        float converted[2048];
+        for (size_t i = 0; i < samples; ++i) {
+            int16_t sample = 0;
+            std::memcpy(&sample, data + i * sizeof(int16_t), sizeof(sample));
+            converted[i] = static_cast<float>(sample) / 32768.0f;
+        }
+        noise_suppressor_.process(converted, samples);
+        jitter_buffer_.push_float(converted, samples, seq, discontinuity);
     } else {
         if (!opus_decoder_) return;
         float decoded[960 * 2]; // up to 40 ms at 48 kHz
         int samples = opus_decode_float(opus_decoder_, data, size, decoded, 960 * 2, 0);
         if (samples > 0) {
+            noise_suppressor_.process(decoded, static_cast<size_t>(samples));
             jitter_buffer_.push_float(decoded, static_cast<size_t>(samples), seq, discontinuity);
         }
     }
