@@ -452,7 +452,8 @@ class MicAudioRecorder(
                 safeAddress(it).equals(requestedAddress, ignoreCase = true)
             }?.let { return it }
         }
-        if (idDevice != null) {
+        if (idDevice != null && (requestedAddress.isBlank() ||
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.P)) {
             return idDevice
         }
 

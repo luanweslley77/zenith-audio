@@ -1978,10 +1978,11 @@ private fun MicSettingsDialog(
                     appliedId = selected?.id ?: inputDeviceId
                     appliedAddress = selected?.address ?: inputDeviceAddress
                 } else {
-                    // Keep the resolved initial device but do not invent an
-                    // address when the stored id had none.
+                    // Keep the resolved initial device and backfill its stable
+                    // address when the stored prefs predate address tracking.
                     appliedId = resolvedInitialDevice?.id ?: initialSettings.inputDeviceId
-                    appliedAddress = initialSettings.inputDeviceAddress
+                    appliedAddress = resolvedInitialDevice?.address?.takeIf { it.isNotBlank() }
+                        ?: initialSettings.inputDeviceAddress
                 }
                 onApply(
                     MicSettings(

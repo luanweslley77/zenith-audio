@@ -227,8 +227,9 @@ class UdpAudioReceiver(private val context: Context) {
     }
 
     fun setMicNoiseSuppression(percent: Int) {
+        // Remember the value; MicAudioRecorder sends it when the setting
+        // changes and resendControlState() replays it after a reconnect.
         micNoiseSuppressionPercent = percent.coerceIn(0, 100)
-        sendRaw(ZapProtocol.buildMicNoiseSuppressionPacket(micNoiseSuppressionPercent))
     }
 
     private fun resendControlState() {

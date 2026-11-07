@@ -61,17 +61,18 @@ class AudioReceiverService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val startupMicSettings = readMicSettings()
         receiver = UdpAudioReceiver(this)
         micRecorder = com.zenith.audio.mic.MicAudioRecorder(
             context = this,
             sendAudioPacket = { data -> receiver?.sendMicAudio(data) },
             sendControlPacket = { data -> receiver?.sendRaw(data) }
         ).apply {
-            applySettings(readMicSettings(), restartIfRecording = false)
+            applySettings(startupMicSettings, restartIfRecording = false)
         }
         // Keep the receiver's remembered denoiser value so it can be replayed
         // with the rest of the control state after a server restart.
-        receiver?.setMicNoiseSuppression(readMicSettings().noiseSuppressionPercent)
+        receiver?.setMicNoiseSuppression(startupMicSettings.noiseSuppressionPercent)
         serverDiscovery = com.zenith.audio.network.ServerDiscovery(this)
         serverDiscovery.startDiscovery()
 

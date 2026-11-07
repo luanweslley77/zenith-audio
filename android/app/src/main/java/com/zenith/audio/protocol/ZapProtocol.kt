@@ -177,8 +177,12 @@ object ZapProtocol {
         return buf.array()
     }
 
-    fun buildMicNoiseSuppressionPacket(percent: Int): ByteArray =
-        buildControlPacket(CMD_SET_MIC_NS, 0L, percent.coerceIn(0, 100))
+    fun buildMicNoiseSuppressionPacket(percent: Int): ByteArray {
+        val clamped = percent.coerceIn(0, 100)
+        // Mirror the value into target_bitrate so a server binary predating
+        // the param16 encoding keeps the requested mix instead of bypassing.
+        return buildControlPacket(CMD_SET_MIC_NS, clamped.toLong(), clamped)
+    }
 
     fun buildVolumeControlPacket(volumePercent: Int): ByteArray {
         val buf = ByteBuffer.allocate(HEADER_SIZE + 8).order(ByteOrder.BIG_ENDIAN)
