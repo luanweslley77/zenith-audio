@@ -54,7 +54,7 @@ data class MicSettings(
         const val DEFAULT_GAIN_DB = 0f
         const val MIN_GAIN_DB = -12f
         const val MAX_GAIN_DB = 24f
-        const val DEFAULT_NOISE_SUPPRESSION_PERCENT = 80
+        const val DEFAULT_NOISE_SUPPRESSION_PERCENT = 0
         const val MIN_NOISE_SUPPRESSION_PERCENT = 0
         const val MAX_NOISE_SUPPRESSION_PERCENT = 100
     }
@@ -172,16 +172,7 @@ class MicAudioRecorder(
         }
     }
 
-    // Resolve a stored device id to its physical address. Audio device ids can
-    // change after a reboot, but the address (bottom/back) is stable.
-    fun resolveMicSettings(settings: MicSettings): MicSettings {
-        if (settings.inputDeviceAddress.isNotBlank() || settings.inputDeviceId < 0) {
-            return settings
-        }
-        val device = getInputDevices().firstOrNull { it.id == settings.inputDeviceId }
-            ?: return settings
-        return settings.copy(inputDeviceAddress = device.address)
-    }
+
 
     fun start(): Boolean {
         if (running.get()) return true
@@ -363,12 +354,7 @@ class MicAudioRecorder(
 
     private fun sendNoiseSuppression(percent: Int) {
         try {
-            sendControlPacket(
-                ZapProtocol.buildControlPacket(
-                    ZapProtocol.CMD_SET_MIC_NS,
-                    percent.toLong()
-                )
-            )
+            sendControlPacket(ZapProtocol.buildMicNoiseSuppressionPacket(percent))
         } catch (_: Exception) {}
     }
 
@@ -443,18 +429,31 @@ class MicAudioRecorder(
             return null
         }
 
-        val requestedId = _settings.value.inputDeviceId
-        if (requestedId >= 0) {
-            devices.firstOrNull { it.id == requestedId }?.let { return it }
-        }
-
         // The id can change after a reboot. The physical address (bottom/back)
-        // is stable, so use it as the first fallback.
+        // is stable, but several routes can share the same address, so keep
+        // the specific id when it still agrees with the stored address.
+        val requestedId = _settings.value.inputDeviceId
         val requestedAddress = _settings.value.inputDeviceAddress
+        val idDevice = if (requestedId >= 0) {
+            devices.firstOrNull { it.id == requestedId }
+        } else {
+            null
+        }
+        if (idDevice != null) {
+            val idAddress = safeAddress(idDevice)
+            if (requestedAddress.isBlank() ||
+                idAddress.equals(requestedAddress, ignoreCase = true)
+            ) {
+                return idDevice
+            }
+        }
         if (requestedAddress.isNotBlank()) {
             devices.firstOrNull {
                 safeAddress(it).equals(requestedAddress, ignoreCase = true)
             }?.let { return it }
+        }
+        if (idDevice != null) {
+            return idDevice
         }
 
         // Default to the phone's own primary (bottom) microphone. A
@@ -496,8 +495,10 @@ class MicAudioRecorder(
         device.type == AudioDeviceInfo.TYPE_TELEPHONY -> "Telephony"
         device.type == AudioDeviceInfo.TYPE_DOCK -> "Dock"
         device.type == AudioDeviceInfo.TYPE_HDMI -> "HDMI"
-        device.type == AudioDeviceInfo.TYPE_IP -> "IP input"
-        device.type == AudioDeviceInfo.TYPE_BUS -> "Bus input"
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            device.type == AudioDeviceInfo.TYPE_IP -> "IP input"
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            device.type == AudioDeviceInfo.TYPE_BUS -> "Bus input"
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             device.type == AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE headset"
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
@@ -506,6 +507,10 @@ class MicAudioRecorder(
     }
 
     private fun safeAddress(device: AudioDeviceInfo): String {
+        // AudioDeviceInfo.getAddress() was added in API 28. minSdk is 26, and
+        // NoSuchMethodError is an Error (not an Exception), so guard the call
+        // explicitly or the mic settings screen crashes on Android 8.x.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return ""
         val raw = try {
             device.address.trim()
         } catch (_: Exception) {

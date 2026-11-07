@@ -1768,11 +1768,30 @@ private fun MicSettingsDialog(
     onDismiss: () -> Unit,
     onApply: (MicSettings) -> Unit
 ) {
-    var sourceMode by remember(initialSettings) { mutableStateOf(initialSettings.sourceMode) }
-    var inputDeviceId by remember(initialSettings) { mutableIntStateOf(initialSettings.inputDeviceId) }
-    var inputDeviceAddress by remember(initialSettings) {
-        mutableStateOf(initialSettings.inputDeviceAddress)
+    // Resolve the stored id/address pair against the current device list. If
+    // the id was reassigned after a reboot, use the stable address instead.
+    val resolvedInitialDevice = remember(initialSettings, devices) {
+        val idDevice = devices.firstOrNull { it.id == initialSettings.inputDeviceId }
+        val idMatchesStoredAddress = idDevice != null &&
+            (initialSettings.inputDeviceAddress.isBlank() ||
+                idDevice.address.equals(initialSettings.inputDeviceAddress, ignoreCase = true))
+        when {
+            idMatchesStoredAddress -> idDevice
+            initialSettings.inputDeviceAddress.isNotBlank() ->
+                devices.firstOrNull {
+                    it.address.equals(initialSettings.inputDeviceAddress, ignoreCase = true)
+                }
+            else -> idDevice
+        }
     }
+    var sourceMode by remember(initialSettings) { mutableStateOf(initialSettings.sourceMode) }
+    var inputDeviceId by remember(initialSettings, resolvedInitialDevice) {
+        mutableIntStateOf(resolvedInitialDevice?.id ?: initialSettings.inputDeviceId)
+    }
+    var inputDeviceAddress by remember(initialSettings, resolvedInitialDevice) {
+        mutableStateOf(resolvedInitialDevice?.address ?: initialSettings.inputDeviceAddress)
+    }
+    var deviceSelectionTouched by remember(initialSettings) { mutableStateOf(false) }
     var gainDb by remember(initialSettings) { mutableFloatStateOf(initialSettings.gainDb) }
     var nsPercent by remember(initialSettings) {
         mutableIntStateOf(initialSettings.noiseSuppressionPercent)
@@ -1837,6 +1856,7 @@ private fun MicSettingsDialog(
                 FilterChip(
                     selected = inputDeviceId < 0,
                     onClick = {
+                        deviceSelectionTouched = true
                         inputDeviceId = MicSettings.DEFAULT_INPUT_DEVICE
                         inputDeviceAddress = ""
                     },
@@ -1856,6 +1876,7 @@ private fun MicSettingsDialog(
                     FilterChip(
                         selected = inputDeviceId == device.id,
                         onClick = {
+                            deviceSelectionTouched = true
                             inputDeviceId = device.id
                             inputDeviceAddress = device.address
                         },
@@ -1948,19 +1969,27 @@ private fun MicSettingsDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                val resolvedAddress = if (inputDeviceId >= 0) {
-                    devices.firstOrNull { it.id == inputDeviceId }?.address
-                        ?: inputDeviceAddress
+                val appliedId: Int
+                val appliedAddress: String
+                if (deviceSelectionTouched) {
+                    // The user tapped a concrete device; its id is current in
+                    // this boot. Save its stable address alongside it.
+                    val selected = devices.firstOrNull { it.id == inputDeviceId }
+                    appliedId = selected?.id ?: inputDeviceId
+                    appliedAddress = selected?.address ?: inputDeviceAddress
                 } else {
-                    ""
+                    // Keep the resolved initial device but do not invent an
+                    // address when the stored id had none.
+                    appliedId = resolvedInitialDevice?.id ?: initialSettings.inputDeviceId
+                    appliedAddress = initialSettings.inputDeviceAddress
                 }
                 onApply(
                     MicSettings(
                         sourceMode = sourceMode,
-                        inputDeviceId = inputDeviceId,
+                        inputDeviceId = appliedId,
                         gainDb = gainDb,
                         noiseSuppressionPercent = nsPercent,
-                        inputDeviceAddress = resolvedAddress
+                        inputDeviceAddress = appliedAddress
                     )
                 )
             }) {

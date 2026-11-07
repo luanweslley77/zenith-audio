@@ -67,10 +67,11 @@ class AudioReceiverService : Service() {
             sendAudioPacket = { data -> receiver?.sendMicAudio(data) },
             sendControlPacket = { data -> receiver?.sendRaw(data) }
         ).apply {
-            val resolved = resolveMicSettings(readMicSettings())
-            applySettings(resolved, restartIfRecording = false)
-            persistMicSettings(resolved)
+            applySettings(readMicSettings(), restartIfRecording = false)
         }
+        // Keep the receiver's remembered denoiser value so it can be replayed
+        // with the rest of the control state after a server restart.
+        receiver?.setMicNoiseSuppression(readMicSettings().noiseSuppressionPercent)
         serverDiscovery = com.zenith.audio.network.ServerDiscovery(this)
         serverDiscovery.startDiscovery()
 
@@ -208,12 +209,12 @@ class AudioReceiverService : Service() {
     fun getMicInputDevices(): List<MicInputDevice> = micRecorder?.getInputDevices() ?: emptyList()
 
     fun applyMicSettings(settings: MicSettings) {
-        val resolved = micRecorder?.resolveMicSettings(settings) ?: settings
-        persistMicSettings(resolved)
-        micRecorder?.applySettings(resolved)
-        Log.i(TAG, "Mic settings: source=${resolved.sourceMode} input=${resolved.inputDeviceId} " +
-                "address=${resolved.inputDeviceAddress} gain=${resolved.gainDb}dB " +
-                "ns=${resolved.noiseSuppressionPercent}%")
+        persistMicSettings(settings)
+        micRecorder?.applySettings(settings)
+        receiver?.setMicNoiseSuppression(settings.noiseSuppressionPercent)
+        Log.i(TAG, "Mic settings: source=${settings.sourceMode} input=${settings.inputDeviceId} " +
+                "address=${settings.inputDeviceAddress} gain=${settings.gainDb}dB " +
+                "ns=${settings.noiseSuppressionPercent}%")
     }
 
     private fun persistMicSettings(settings: MicSettings) {

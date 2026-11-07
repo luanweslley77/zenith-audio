@@ -177,6 +177,9 @@ object ZapProtocol {
         return buf.array()
     }
 
+    fun buildMicNoiseSuppressionPacket(percent: Int): ByteArray =
+        buildControlPacket(CMD_SET_MIC_NS, 0L, percent.coerceIn(0, 100))
+
     fun buildVolumeControlPacket(volumePercent: Int): ByteArray {
         val buf = ByteBuffer.allocate(HEADER_SIZE + 8).order(ByteOrder.BIG_ENDIAN)
         buf.putShort(MAGIC)

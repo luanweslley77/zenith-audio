@@ -154,6 +154,8 @@ class UdpAudioReceiver(private val context: Context) {
     private var isAoaDacActive: Boolean = false
     private var isPcAudioEnabled: Boolean = true
     private var isPhoneOnly: Boolean = false
+    @Volatile
+    private var micNoiseSuppressionPercent: Int = 0
     private var hasReceivedServerPacket: Boolean = false
     private var lastReportedState: ConnectionState? = null
 
@@ -224,7 +226,13 @@ class UdpAudioReceiver(private val context: Context) {
         )
     }
 
+    fun setMicNoiseSuppression(percent: Int) {
+        micNoiseSuppressionPercent = percent.coerceIn(0, 100)
+        sendRaw(ZapProtocol.buildMicNoiseSuppressionPacket(micNoiseSuppressionPercent))
+    }
+
     private fun resendControlState() {
+        sendRaw(ZapProtocol.buildMicNoiseSuppressionPacket(micNoiseSuppressionPercent))
         sendRaw(
             ZapProtocol.buildControlPacket(
                 if (isPcAudioEnabled) ZapProtocol.CMD_RESUME else ZapProtocol.CMD_PAUSE,
