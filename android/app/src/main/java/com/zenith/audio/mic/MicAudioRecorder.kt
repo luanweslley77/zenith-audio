@@ -26,17 +26,24 @@ import kotlin.math.sqrt
 import kotlin.math.tanh
 
 enum class MicSourceMode {
-    RAW,
+    UNPROCESSED,
+    VOICE_RECOGNITION,
+    MIC,
     VOICE_CALL;
 
     companion object {
-        fun fromStored(value: String?): MicSourceMode =
-            values().firstOrNull { it.name == value } ?: RAW
+        fun fromStored(value: String?): MicSourceMode = when (value) {
+            "RAW", "UNPROCESSED" -> UNPROCESSED
+            "VOICE", "VOICE_RECOGNITION" -> VOICE_RECOGNITION
+            "MIC" -> MIC
+            "CALL", "VOICE_CALL" -> VOICE_CALL
+            else -> UNPROCESSED
+        }
     }
 }
 
 data class MicSettings(
-    val sourceMode: MicSourceMode = MicSourceMode.RAW,
+    val sourceMode: MicSourceMode = MicSourceMode.UNPROCESSED,
     val inputDeviceId: Int = DEFAULT_INPUT_DEVICE,
     val gainDb: Float = DEFAULT_GAIN_DB
 ) {
@@ -303,30 +310,41 @@ class MicAudioRecorder(
     }
 
     private fun sourceCandidates(): List<Int> {
-        if (_settings.value.sourceMode == MicSourceMode.VOICE_CALL) {
-            return listOf(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                MediaRecorder.AudioSource.MIC
-            )
-        }
-
+        val mode = _settings.value.sourceMode
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         val unprocessedHint = try {
             audioManager?.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED)
         } catch (_: Exception) {
             null
         }
-        Log.i(TAG, "UNPROCESSED support hint: ${unprocessedHint ?: "unknown"}")
+        Log.i(TAG, "Source mode=$mode | UNPROCESSED hint=${unprocessedHint ?: "unknown"}")
 
-        // Try the cleanest source first. UNPROCESSED bypasses the voice-call
-        // noise suppressor / AGC / echo canceller; VOICE_RECOGNITION and MIC
-        // are fallbacks for devices whose HAL refuses UNPROCESSED.
-        return listOf(
-            MediaRecorder.AudioSource.UNPROCESSED,
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            MediaRecorder.AudioSource.MIC,
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION
-        )
+        // The selected source is tried first; the remaining entries are
+        // fallbacks for devices whose HAL refuses a particular source.
+        return when (mode) {
+            MicSourceMode.UNPROCESSED -> listOf(
+                MediaRecorder.AudioSource.UNPROCESSED,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            )
+            MicSourceMode.VOICE_RECOGNITION -> listOf(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.UNPROCESSED,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            )
+            MicSourceMode.MIC -> listOf(
+                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.UNPROCESSED,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            )
+            MicSourceMode.VOICE_CALL -> listOf(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.MIC
+            )
+        }
     }
 
     private fun tryCreateRecord(source: Int, bufferSize: Int): AudioRecord? {
@@ -380,10 +398,10 @@ class MicAudioRecorder(
     }
 
     private fun sourceLabel(source: Int): String = when (source) {
-        MediaRecorder.AudioSource.UNPROCESSED -> "RAW (unprocessed)"
-        MediaRecorder.AudioSource.VOICE_RECOGNITION -> "RAW (voice recognition)"
-        MediaRecorder.AudioSource.MIC -> "RAW (microphone)"
-        MediaRecorder.AudioSource.VOICE_COMMUNICATION -> "VOICE CALL (processed)"
+        MediaRecorder.AudioSource.UNPROCESSED -> "UNPROCESSED (rawest)"
+        MediaRecorder.AudioSource.VOICE_RECOGNITION -> "VOICE (recognition)"
+        MediaRecorder.AudioSource.MIC -> "MIC (OEM)"
+        MediaRecorder.AudioSource.VOICE_COMMUNICATION -> "CALL (processed)"
         else -> "SOURCE $source"
     }
 

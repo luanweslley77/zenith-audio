@@ -1788,21 +1788,22 @@ private fun MicSettingsDialog(
                     color = Color(0xFFAAAAAA)
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    MicSourceMode.UNPROCESSED to "UNPROCESSED (rawest, can hiss)",
+                    MicSourceMode.VOICE_RECOGNITION to "VOICE (noise-tuned)",
+                    MicSourceMode.MIC to "MIC (OEM, like WO Mic)",
+                    MicSourceMode.VOICE_CALL to "CALL (speaker)"
+                ).forEach { (mode, label) ->
                     FilterChip(
-                        selected = sourceMode == MicSourceMode.RAW,
-                        onClick = { sourceMode = MicSourceMode.RAW },
-                        label = { Text("RAW", fontSize = 11.sp) }
-                    )
-                    FilterChip(
-                        selected = sourceMode == MicSourceMode.VOICE_CALL,
-                        onClick = { sourceMode = MicSourceMode.VOICE_CALL },
-                        label = { Text("CALL", fontSize = 11.sp) }
+                        selected = sourceMode == mode,
+                        onClick = { sourceMode = mode },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(label, fontSize = 11.sp) }
                     )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "RAW bypasses Android call filters (noise suppression, AGC and echo cancellation). It is the best choice with headphones, mic-only mode and Discord/Krisp. CALL is the processed route for speaker use.",
+                    text = "UNPROCESSED bypasses every Android filter and can expose the phone's own hiss. MIC uses the OEM default (the same source WO Mic used) and usually has a lower noise floor. VOICE is speech-tuned. CALL adds the full call processing for speaker use.",
                     fontSize = 10.sp,
                     color = Color(0xFFAAAAAA)
                 )
