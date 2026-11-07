@@ -20,6 +20,8 @@ struct ClientEndpoint {
     uint16_t jitter_us = 0;
     uint16_t buffer_delay_ms = 0;
     uint16_t rtt_ms = 0;
+    bool wants_audio = true;      // false when the client is in mic-only mode
+    bool pc_muted_by_client = false; // true while this client muted the PC sink
 };
 
 class NetworkServer : public IAudioTransport {

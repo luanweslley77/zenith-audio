@@ -59,6 +59,8 @@ class MainActivity : ComponentActivity() {
     private val activeDetectedIpState = mutableStateOf("192.168.1.9")
     private val activeTransportState = mutableStateOf("Wi-Fi")
     private val isGamingModeState = mutableStateOf(true)
+    private val pcAudioEnabledState = mutableStateOf(true)
+    private val phoneOnlyState = mutableStateOf(false)
 
     private val dspEnabledState = mutableStateOf(true)
     private val dspPresetState = mutableStateOf(com.zenith.audio.dsp.DspEqualizerEngine.Preset.FLAT)
@@ -191,6 +193,8 @@ class MainActivity : ComponentActivity() {
 
         val prefs = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
         val initialIp = prefs.getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
+        pcAudioEnabledState.value = prefs.getBoolean("pc_audio_enabled", true)
+        phoneOnlyState.value = prefs.getBoolean("phone_only", false)
 
         setContent {
             MaterialTheme(
@@ -224,6 +228,8 @@ class MainActivity : ComponentActivity() {
                         isCallActive = isCallActiveState.value,
                         isAoaEnabled = isAoaEnabledState.value,
                         isUsbConnected = isUsbConnectedState.value,
+                        pcAudioEnabled = pcAudioEnabledState.value,
+                        phoneOnly = phoneOnlyState.value,
                         onConnect = { ip, bitrate ->
                             // Keep every address already used (LAN and VPN), so
                             // discovery can probe both after a network switch.
@@ -285,6 +291,16 @@ class MainActivity : ComponentActivity() {
                             } else {
                                 audioService?.toggleMic(enable)
                             }
+                        },
+                        onTogglePcAudio = { enabled ->
+                            pcAudioEnabledState.value = enabled
+                            prefs.edit().putBoolean("pc_audio_enabled", enabled).apply()
+                            audioService?.setPcAudioEnabled(enabled)
+                        },
+                        onTogglePhoneOnly = { enabled ->
+                            phoneOnlyState.value = enabled
+                            prefs.edit().putBoolean("phone_only", enabled).apply()
+                            audioService?.setPhoneOnly(enabled)
                         }
                     )
                 }
@@ -378,6 +394,8 @@ fun ZenithAudioScreen(
     isCallActive: Boolean,
     isAoaEnabled: Boolean,
     isUsbConnected: Boolean,
+    pcAudioEnabled: Boolean,
+    phoneOnly: Boolean,
     onConnect: (String, Int) -> Unit,
     onDisconnect: () -> Unit,
     onBitrateChange: (Int) -> Unit,
@@ -391,7 +409,9 @@ fun ZenithAudioScreen(
     onVolumeChange: (Int) -> Unit,
     onToggleCallDucking: (Boolean) -> Unit,
     onToggleAoa: (Boolean) -> Unit,
-    onToggleMic: (Boolean) -> Unit
+    onToggleMic: (Boolean) -> Unit,
+    onTogglePcAudio: (Boolean) -> Unit,
+    onTogglePhoneOnly: (Boolean) -> Unit
 ) {
     var serverIp by remember { mutableStateOf(initialIp) }
     var hasUserEditedIp by remember { mutableStateOf(false) }
@@ -1049,6 +1069,76 @@ fun ZenithAudioScreen(
                             trackColor = Color(0xFF333333)
                         )
                     }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 🔊 AUDIO ROUTING (MIC-ONLY / PHONE-ONLY)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Text(
+                    text = "AUDIO ROUTING",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "PC AUDIO TO PHONE",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = if (pcAudioEnabled) "System audio is streamed to the phone" else "Mic-only mode (no PC audio on the phone)",
+                            fontSize = 11.sp,
+                            color = if (pcAudioEnabled) Color(0xFF00E676) else Color(0xFFFFB74D)
+                        )
+                    }
+                    Switch(
+                        checked = pcAudioEnabled,
+                        onCheckedChange = onTogglePcAudio
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "PHONE-ONLY OUTPUT",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = if (phoneOnly) "PC speakers muted; audio goes only to the phone" else "PC speakers stay on",
+                            fontSize = 11.sp,
+                            color = if (phoneOnly) Color(0xFF00E676) else Color(0xFF888888)
+                        )
+                    }
+                    Switch(
+                        checked = phoneOnly,
+                        onCheckedChange = onTogglePhoneOnly
+                    )
                 }
             }
         }

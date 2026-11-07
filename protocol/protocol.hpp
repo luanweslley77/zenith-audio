@@ -56,7 +56,8 @@ enum ControlCmd : uint8_t {
     CMD_PAUSE       = 0x03,
     CMD_RESUME      = 0x04,
     CMD_SET_VOLUME  = 0x05,
-    CMD_MIC_STATE   = 0x06
+    CMD_MIC_STATE   = 0x06,
+    CMD_SET_PC_MUTE = 0x07  // param16: 1 = mute PC speakers, 0 = unmute
 };
 
 #pragma pack(push, 1)

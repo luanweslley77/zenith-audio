@@ -95,9 +95,14 @@ void NetworkServer::broadcast_audio(const uint8_t *payload, size_t size, uint64_
         if (clients_.empty()) return;
         target_addrs.reserve(clients_.size());
         for (const auto &c : clients_) {
-            target_addrs.push_back(c.addr);
+            // A client in mic-only mode still sends microphone frames and
+            // feedback, but must not receive the PC system audio stream.
+            if (c.wants_audio) {
+                target_addrs.push_back(c.addr);
+            }
         }
     }
+    if (target_addrs.empty()) return;
 
     uint32_t seq = current_seq_.fetch_add(1, std::memory_order_relaxed);
 
@@ -230,17 +235,41 @@ void NetworkServer::update_or_add_client(const struct sockaddr_in &addr) {
 void NetworkServer::cleanup_stale_clients() {
     uint64_t now_us = get_now_us();
     constexpr uint64_t TIMEOUT_US = 8'000'000; // 8 seconds timeout
+    bool restore_pc_speakers = false;
 
-    std::lock_guard<std::mutex> lock(clients_mutex_);
-    for (auto it = clients_.begin(); it != clients_.end();) {
-        if (now_us - it->last_seen_us > TIMEOUT_US) {
-            char ip_str[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &it->addr.sin_addr, ip_str, sizeof(ip_str));
-            std::cout << "[Network] Client timed out: " << ip_str << ":" << ntohs(it->addr.sin_port) << "\n";
-            it = clients_.erase(it);
-        } else {
-            ++it;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        for (auto it = clients_.begin(); it != clients_.end();) {
+            if (now_us - it->last_seen_us > TIMEOUT_US) {
+                bool was_muting_pc = it->pc_muted_by_client;
+                char ip_str[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &it->addr.sin_addr, ip_str, sizeof(ip_str));
+                std::cout << "[Network] Client timed out: " << ip_str << ":" << ntohs(it->addr.sin_port) << "\n";
+                it = clients_.erase(it);
+
+                if (was_muting_pc) {
+                    bool another_client_is_muting = false;
+                    for (const auto &other : clients_) {
+                        if (other.pc_muted_by_client) {
+                            another_client_is_muting = true;
+                            break;
+                        }
+                    }
+                    if (!another_client_is_muting) {
+                        restore_pc_speakers = true;
+                    }
+                }
+            } else {
+                ++it;
+            }
         }
+    }
+
+    if (restore_pc_speakers) {
+        // The phone that requested phone-only output is gone. Do not leave the
+        // PC silent with no client receiving the audio.
+        system("wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 >/dev/null 2>&1 &");
+        std::cout << "[Network] PC speakers restored after mute owner disconnected.\n";
     }
 }
 
@@ -345,6 +374,39 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                 } else if (ctrl.command == zap::CMD_MIC_STATE) {
                     bool mic_on = (ctrl.param16 == 1);
                     std::cout << "[Network] Client microphone state: " << (mic_on ? "ON" : "OFF") << "\n";
+                } else if (ctrl.command == zap::CMD_PAUSE || ctrl.command == zap::CMD_RESUME) {
+                    bool wants_audio = (ctrl.command == zap::CMD_RESUME);
+                    {
+                        std::lock_guard<std::mutex> lock(clients_mutex_);
+                        for (auto &c : clients_) {
+                            if (c.addr.sin_addr.s_addr == src_addr.sin_addr.s_addr &&
+                                c.addr.sin_port == src_addr.sin_port) {
+                                c.wants_audio = wants_audio;
+                                break;
+                            }
+                        }
+                    }
+                    std::cout << "[Network] Client PC audio to phone: "
+                              << (wants_audio ? "RESUMED" : "PAUSED") << "\n";
+                } else if (ctrl.command == zap::CMD_SET_PC_MUTE) {
+                    bool mute = (ctrl.param16 == 1);
+                    {
+                        std::lock_guard<std::mutex> lock(clients_mutex_);
+                        for (auto &c : clients_) {
+                            if (c.addr.sin_addr.s_addr == src_addr.sin_addr.s_addr &&
+                                c.addr.sin_port == src_addr.sin_port) {
+                                c.pc_muted_by_client = mute;
+                                break;
+                            }
+                        }
+                    }
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd),
+                             "wpctl set-mute @DEFAULT_AUDIO_SINK@ %d >/dev/null 2>&1 &",
+                             mute ? 1 : 0);
+                    system(cmd);
+                    std::cout << "[Network] Client PC speaker mute: "
+                              << (mute ? "ON" : "OFF") << "\n";
                 }
 
                 if (control_cb_) {

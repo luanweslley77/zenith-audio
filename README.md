@@ -47,6 +47,9 @@
   - **Media Stability Mode (5.0ms Buffer)**: Jitter-free playback over noisy Wi-Fi networks.
 - 🎙️ **Bi-Directional Wireless Microphone**:
   - Turns your phone into a studio PC microphone (`Zenith Wireless Microphone`) for Discord, Zoom, and in-game voice chat.
+- 🎧 **Per-Client Audio Routing**:
+  - **Mic-only mode** stops the PC system audio from being sent to the phone while keeping the wireless microphone and the connection alive.
+  - **Phone-only output** mutes the PC speakers while the same audio keeps streaming to the phone.
 - 📞 **Smart Phone Call Auto-Ducking**:
   - Automatically ducks PC audio to 15% volume when a phone call arrives, restoring full volume when you hang up.
 - 🔍 **1-Tap Auto-Detect IP & Multi-Subnet Discovery**:

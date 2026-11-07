@@ -32,6 +32,7 @@ object ZapProtocol {
     const val CMD_RESUME: Byte = 0x04
     const val CMD_SET_VOLUME: Byte = 0x05
     const val CMD_MIC_STATE: Byte = 0x06
+    const val CMD_SET_PC_MUTE: Byte = 0x07
 
     const val HEADER_SIZE = 20
 
@@ -158,7 +159,7 @@ object ZapProtocol {
         )
     }
 
-    fun buildControlPacket(command: Byte, targetBitrate: Long): ByteArray {
+    fun buildControlPacket(command: Byte, targetBitrate: Long, param16: Int = 0): ByteArray {
         val buf = ByteBuffer.allocate(HEADER_SIZE + 8).order(ByteOrder.BIG_ENDIAN)
         buf.putShort(MAGIC)
         buf.put(VERSION)
@@ -170,7 +171,7 @@ object ZapProtocol {
 
         buf.put(command)
         buf.put(0.toByte())
-        buf.putShort(0.toShort())
+        buf.putShort((param16 and 0xFFFF).toShort())
         buf.putInt(targetBitrate.toInt())
         return buf.array()
     }

@@ -48,10 +48,18 @@ class UdpAudioReceiver(private val context: Context) {
     private var currentBitrateKbps: Int = 320
     private var lastPacketTimeNs: Long = 0L
 
-    fun start(serverIp: String, port: Int = ZapProtocol.DEFAULT_PORT, initialBitrateKbps: Int = 320): Boolean {
+    fun start(
+        serverIp: String,
+        port: Int = ZapProtocol.DEFAULT_PORT,
+        initialBitrateKbps: Int = 320,
+        pcAudioEnabled: Boolean = true,
+        phoneOnly: Boolean = false
+    ): Boolean {
         if (isRunning.get()) stop()
 
         currentBitrateKbps = initialBitrateKbps
+        isPcAudioEnabled = pcAudioEnabled
+        isPhoneOnly = phoneOnly
         serverPort = port
 
         try {
@@ -78,6 +86,8 @@ class UdpAudioReceiver(private val context: Context) {
 
         isRunning.set(true)
         lastPacketTimeNs = System.nanoTime()
+        hasReceivedServerPacket = false
+        lastReportedState = null
 
         currentTransportName = if (serverIp.startsWith("10.") || serverIp.startsWith("192.168.42.") || serverIp == "127.0.0.1") {
             "USB 0.5ms Direct"
@@ -124,6 +134,10 @@ class UdpAudioReceiver(private val context: Context) {
     private var currentTransportName: String = "Wi-Fi"
     private var isCallDuckingActive: Boolean = false
     private var isAoaDacActive: Boolean = false
+    private var isPcAudioEnabled: Boolean = true
+    private var isPhoneOnly: Boolean = false
+    private var hasReceivedServerPacket: Boolean = false
+    private var lastReportedState: ConnectionState? = null
 
     fun setAutoBitrate(enabled: Boolean) {
         isAutoBitrate = enabled
@@ -160,6 +174,58 @@ class UdpAudioReceiver(private val context: Context) {
     }
 
     fun getCurrentVolume(): Int = currentVolumePercent
+
+    /**
+     * Enables or disables the PC system-audio stream for this client.
+     * Disabling it keeps the microphone path and the connection alive.
+     */
+    fun setPcAudioEnabled(enabled: Boolean) {
+        isPcAudioEnabled = enabled
+        jitterBuffer.reset()
+        sendRaw(
+            ZapProtocol.buildControlPacket(
+                if (enabled) ZapProtocol.CMD_RESUME else ZapProtocol.CMD_PAUSE,
+                0
+            )
+        )
+    }
+
+    /**
+     * Mutes or unmutes the PC's default output sink. The server captures the
+     * sink monitor, which remains available while the speakers are muted, so
+     * the phone can be the only audible output.
+     */
+    fun setPhoneOnly(enabled: Boolean) {
+        isPhoneOnly = enabled
+        sendRaw(
+            ZapProtocol.buildControlPacket(
+                ZapProtocol.CMD_SET_PC_MUTE,
+                0,
+                if (enabled) 1 else 0
+            )
+        )
+    }
+
+    private fun resendControlState() {
+        sendRaw(
+            ZapProtocol.buildControlPacket(
+                if (isPcAudioEnabled) ZapProtocol.CMD_RESUME else ZapProtocol.CMD_PAUSE,
+                0
+            )
+        )
+        // Only claim the PC mute state when phone-only mode is active. Sending
+        // an unmute on every reconnect would override a mute the user applied
+        // manually on the PC.
+        if (isPhoneOnly) {
+            sendRaw(
+                ZapProtocol.buildControlPacket(
+                    ZapProtocol.CMD_SET_PC_MUTE,
+                    0,
+                    1
+                )
+            )
+        }
+    }
 
     fun switchEndpoint(newIp: String, newPort: Int = ZapProtocol.DEFAULT_PORT, transportName: String = "Wi-Fi") {
         if (newIp.isBlank()) return
@@ -247,9 +313,11 @@ class UdpAudioReceiver(private val context: Context) {
 
                 val byteBuffer = ByteBuffer.wrap(packet.data, packet.offset, packet.length)
                 val header = ZapProtocol.parseHeader(byteBuffer) ?: continue
+                hasReceivedServerPacket = true
 
                 when (header.type) {
                     ZapProtocol.PKT_AUDIO_FRAME -> {
+                        if (!isPcAudioEnabled) continue
                         val payloadOffset = packet.offset + ZapProtocol.HEADER_SIZE
                         val payloadSize = header.payloadSize
                         if (payloadSize > 0 && payloadOffset + payloadSize <= packet.offset + packet.length) {
@@ -371,9 +439,19 @@ class UdpAudioReceiver(private val context: Context) {
                     sendPing()
                     ConnectionState.RECONNECTING
                 }
-                jitterBuffer.getPacketsReceived() > 0 -> ConnectionState.CONNECTED
+                // PONG/announce traffic keeps the link alive even when the
+                // client is in mic-only mode and no audio frames are arriving.
+                hasReceivedServerPacket -> ConnectionState.CONNECTED
                 else -> ConnectionState.CONNECTING
             }
+
+            if (connectionState == ConnectionState.CONNECTED &&
+                lastReportedState != ConnectionState.CONNECTED
+            ) {
+                // Re-apply the routing state after a reconnect or a server restart.
+                resendControlState()
+            }
+            lastReportedState = connectionState
 
             val rtt = measuredRttMs
             val jitter = jitterBuffer.getJitterMs()
@@ -388,7 +466,7 @@ class UdpAudioReceiver(private val context: Context) {
             } else 0.0
 
             // Dynamic Congestion Control (Smart Auto-Pilot Bitrate)
-            if (isAutoBitrate && connectionState == ConnectionState.CONNECTED) {
+            if (isAutoBitrate && isPcAudioEnabled && connectionState == ConnectionState.CONNECTED) {
                 if (lossPct > 1.2 || rtt > 50.0) {
                     val nextBitrate = when (currentBitrateKbps) {
                         320 -> 256

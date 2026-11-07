@@ -160,6 +160,14 @@ class AudioReceiverService : Service() {
         receiver?.setMasterVolume(volumePercent)
     }
 
+    fun setPcAudioEnabled(enabled: Boolean) {
+        receiver?.setPcAudioEnabled(enabled)
+    }
+
+    fun setPhoneOnly(enabled: Boolean) {
+        receiver?.setPhoneOnly(enabled)
+    }
+
     fun setCallDuckingEnabled(enabled: Boolean) {
         callDuckingManager?.setAutoDuckingEnabled(enabled)
     }
@@ -181,7 +189,21 @@ class AudioReceiverService : Service() {
     private fun startStreaming(ip: String, port: Int, bitrate: Int) {
         failoverManager?.updateWifiServerIp(ip)
         failoverManager?.setStreamingActive(true)
-        receiver?.start(ip, port, bitrate)
+
+        val prefs = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
+        val pcAudioEnabled = prefs.getBoolean("pc_audio_enabled", true)
+        val phoneOnly = prefs.getBoolean("phone_only", false)
+        val started = receiver?.start(ip, port, bitrate, pcAudioEnabled, phoneOnly) == true
+
+        if (started) {
+            // Send the current routing state to the server after the socket is up.
+            receiver?.setPcAudioEnabled(pcAudioEnabled)
+            if (phoneOnly) {
+                // Do not send an unmute when phone-only is off: the PC may have
+                // been muted manually and the app should not override that.
+                receiver?.setPhoneOnly(true)
+            }
+        }
 
         metricsCollectorJob?.cancel()
         metricsCollectorJob = serviceScope.launch {
@@ -215,6 +237,13 @@ class AudioReceiverService : Service() {
         metricsCollectorJob?.cancel()
         failoverManager?.setStreamingActive(false)
         micRecorder?.stop()
+
+        // Do not leave the PC muted after the phone stops listening.
+        val prefs = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("phone_only", false)) {
+            receiver?.setPhoneOnly(false)
+        }
+
         receiver?.stop()
     }
 
