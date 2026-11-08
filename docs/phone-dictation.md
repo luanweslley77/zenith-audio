@@ -86,7 +86,7 @@ Options with external evidence (Portuguese WER from a public pt-BR comparison; p
 
 | Model | Prepared | Spontaneous | pt-BR fit | Hex |
 |---|---|---|---|---|
-| pt-BR Parakeet fine-tune (TAGARELA) | **7.5%** | **14.3%** | Portuguese by construction, no language detection to fail | Converted; see §16 |
+| pt-BR Parakeet fine-tune (TAGARELA) | **7.5%** | **14.3%** | Portuguese by construction, no language detection to fail | Imported and verified; see §16 |
 | `whisper_large_v3_turbo` | 8.4%* | 23.4%* | Good; the `pt` hint prevents the Parakeet-style silent language switch | Native, GPU, 886 MB |
 | `parakeet_v3` (stock) | 9.0% | 21.8% | Risky: pt-PT training, no language control, English drift | Native, GPU, 740 MB |
 | `nemotron_3_5_asr` | — | 20.7%** | Worse; streaming is its advantage | Native, GPU, 751 MB |
@@ -107,8 +107,8 @@ The fine-tune's raw FLEURS number is inflated by **number formatting**, not reco
 
 Decision:
 
-- **Quality choice:** the pt-BR Parakeet fine-tune. It is converted and validated (§16); import it into Hex and test it on the user's own voice before making it the default.
-- **Safe default until the import is verified:** `whisper_large_v3_turbo` with `language: "pt"`. It is the best pt-BR option that needs no conversion, and the language hint removes the failure mode where the output silently changes language.
+- **Quality choice:** the pt-BR Parakeet fine-tune. It is converted, imported into Hex and verified on Vulkan (§16); test it on the user's own voice before making it the default.
+- **Safe default until the user's own A/B:** `whisper_large_v3_turbo` with `language: "pt"`. It is the best pt-BR option that needs no conversion, and the language hint removes the failure mode where the output silently changes language.
 - **Do not** ship stock `parakeet_v3` for pt-BR.
 - **Number formatting:** the fine-tune spells numbers out. If digits are wanted, add an inverse text normalization step later; do not change the acoustic model for it.
 
@@ -510,7 +510,7 @@ Notes:
 | Phase | Work | Acceptance |
 |---|---|---|
 | **0 — Validate (zero code)** | Install Hex (RPM), `hex model install whisper_large_v3_turbo`, choose "Zenith Wireless Microphone" as Hex's microphone, dictate in Portuguese with the phone. Also install `parakeet_v3` and repeat a few short phrases to confirm the pt-BR drift described in §2.3. | Whisper text appears in a KDE app; quality is acceptable; latency measured. No English drift on short phrases. |
-| **0.5 — pt-BR model A/B** | Record 10–15 phrases (numbers, names, accents, code terms) once. Transcribe the same WAVs with the pt-BR Parakeet fine-tune (converted; see §16), Whisper and stock v3. Score errors by hand. | A measured winner on this speaker, not a benchmark guess. If the fine-tune wins, import it into Hex and make it the default; otherwise keep Whisper. |
+| **0.5 — pt-BR model A/B** | Record 10–15 phrases (numbers, names, accents, code terms) once. Transcribe the same WAVs with the pt-BR Parakeet fine-tune (imported; see §16), Whisper and stock v3. Score errors by hand. | A measured winner on this speaker, not a benchmark guess. If the fine-tune wins, make it the default; otherwise keep Whisper. |
 | **1 — Bridge + test button** | Implement the bridge and a "Test transcription" button in the existing app (or a tiny debug screen) that sends 5 s of audio and shows the result. | Round trip < 2 s for a 10 s utterance; text matches Phase 0 for the same audio; the main error paths (`model-unavailable`, `timeout`, `audio-too-large`) are reachable and shown. |
 | **2 — IME** | Implement `ZenithImeService`, capture, TCP client, `commitText`, cancel and state machine. | Works in WhatsApp, Chrome and Notes; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
 | **3 — Polish** | Model/language picker, token pairing, undo (`deleteSurroundingText`), PC-target shortcut, optional live text with `nemotron_3_5_asr`. | Each item independently verified. |
@@ -524,7 +524,7 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 1. **Does `hex service --embedded` start headless on Fedora KDE Wayland** without a display? It needs a Vulkan ICD; the docs say the window needs a driver even for CPU inference. Test before Phase 1.
 2. **VRAM:** one 740–890 MB model is fine; two (desktop + bridge) are probably fine on 4 GB, but Vulkan overhead is unknown. Decide whether the bridge unloads after idle.
 3. **pt-BR quality measured:** Whisper large-v3-turbo vs the pt-BR Parakeet fine-tune. Decide by WER on the same recordings, not by a benchmark on someone else's audio. The fine-tune needs a transcribe.cpp GGUF; the public checkpoint is `alexandreacff/parakeet-tdt-v3-ptBR-30s`.
-4. **GGUF conversion:** resolved — `scripts/convert-parakeet.py` converted the pt-BR fine-tune with a new variant profile and `prefer_direct_load`, and `transcribe-cli` loads the Q8_0 file (§16). Remaining: import it into Hex and confirm the picker/runtime.
+4. **GGUF conversion and Hex import:** resolved — the pt-BR fine-tune was converted (§16), imported as `custom-7d13a4fb474b2100`, checked on the RX 6500 XT via Vulkan, and transcribed the smoke samples correctly. Remaining: run it on the user's voice.
 5. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
 6. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
 7. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt, but verify long holds.
@@ -563,7 +563,7 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 - **Trigger decides destination.** No router, no synchronized selector.
 - **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; no second capture implementation.
 - **Whisper with a language hint for pt-BR.** It is the safe native fallback that handles Brazilian Portuguese and prevents the output language from silently changing.
-- **The pt-BR Parakeet fine-tune is the quality choice**, validated on read and spontaneous speech (§16); import it into Hex before making it the default.
+- **The pt-BR Parakeet fine-tune is the quality choice**, validated on read and spontaneous speech and imported into Hex (§16); make it the default after the user's own A/B.
 - **Do not log transcripts by default.** Voice text is sensitive.
 - **Phase 0 before code.** The model's Portuguese quality is the real risk, not the plumbing.
 - **Do not trust a model card's language list.** "Portuguese" can mean pt-PT; test on the speaker.
@@ -602,7 +602,7 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 
 ## 16. Appendix: converting the pt-BR Parakeet fine-tune (validated)
 
-**Status (2026-11-08):** converted, quantized and validated with `transcribe-cli`. **Not yet imported into Hex**, because Hex was not installed on the test machine. The GGUF header is compatible (see §16.3).
+**Status (2026-11-08):** converted, quantized, **imported into Hex** (`custom-7d13a4fb474b2100`) and verified on the RX 6500 XT via Vulkan. `hex model transcribe` matches the reference on the smoke samples.
 
 ### 16.1 What was converted
 
@@ -675,7 +675,7 @@ build/bin/transcribe-cli -q -m "$MODELS/.../...-Q8_0.gguf" -l pt sample.wav
 
 The conversion needs ~2.4 GB for the F32 intermediate; delete it after quantization. Do not run it in a 7 GB tmpfs — the F32 file will fill it.
 
-### 16.3 Resulting metadata (Hex import check)
+### 16.3 Resulting metadata and Hex import
 
 ```text
 general.architecture = parakeet
@@ -685,7 +685,21 @@ general.version      = v3
 tensor types         = 424 F32, 48 F16, 225 Q8_0
 ```
 
-Hex accepts architectures `parakeet`, `whisper`, `qwen3_asr`, `cohere_asr`, `sensevoice` and `gigaam`; it accepts tensor types F32, F16 and Q8_0. This file matches. Import with `hex model import <path>` (Labs), then select the `custom-<hash>` id.
+Hex accepts architectures `parakeet`, `whisper`, `qwen3_asr`, `cohere_asr`, `sensevoice` and `gigaam`; it accepts tensor types F32, F16 and Q8_0. This file matches. Hex 3.3.0, built from `~/hex` after merging `upstream/dev`:
+
+```text
+$ hex model import parakeet-tdt-v3-ptBR-30s-Q8_0.gguf
+imported  custom-7d13a4fb474b2100  Parakeet TDT 0.6B v3 pt-BR (TAGARELA)
+
+$ hex model check custom-7d13a4fb474b2100 --language pt
+ready  AMD Radeon RX 6500 XT (RADV NAVI24) (vulkan)
+
+$ hex model transcribe <fleurs sample> --model custom-7d13a4fb474b2100 --language pt
+Israel exige uma presença militar contínua no vale por dez anos assim que um acordo
+seja assinado, ao passo que a AP concorda em deixar essa presença por apenas cinco anos.
+```
+
+The last output is character-for-character the FLEURS reference. The model id is a SHA-256 prefix of this file, so it is local to this machine; the same file produces the same id.
 
 ### 16.4 Measured results
 
@@ -713,5 +727,5 @@ Interpretation:
 - FLEURS is read speech; TAGARELA is spontaneous but only 10 clips. The user's own voice remains the decisive test (Phase 0.5).
 - The published 7.5% prepared / 14.3% spontaneous figures refer to the `-plus` checkpoint; this conversion used the public `-30s`, which measured 7.60% raw / 18.44% here.
 - The fine-tune spells numbers out. If digits are preferred, add inverse text normalization in the bridge; it is a formatting step, not a reason to change models.
-- The GGUF was validated with `transcribe-cli` (same loader as Hex). The Hex import itself is still pending.
+- Hex imported the file as `custom-7d13a4fb474b2100` and loaded it on the RX 6500 XT via Vulkan; the smoke samples match. The decisive test is still the user's own voice.
 
