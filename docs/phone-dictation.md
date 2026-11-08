@@ -11,11 +11,12 @@
 ## 0. TL;DR
 
 - The phone already sends **48 kHz mono PCM16, 10 ms frames** to the PC over ZAP/UDP 59100.
-- Speech recognition runs on the **PC**, using **Hex** (`hex service --embedded`) as a library, with **Whisper large-v3-turbo** and `language: pt` by default. Stock Parakeet v3 is not used: its Portuguese training data is European Portuguese and it cannot be told which language to output (§2.3).
-- A small **bridge** process on the PC accepts the dictation audio over **TCP**, builds a WAV, asks Hex for the text, and returns it on the same connection.
-- The phone gets the text through a **custom Android IME** (a voice keyboard) and inserts it with `InputConnection.commitText()`.
+- Speech recognition runs on the **PC**, using **Hex** (`hex service --embedded`) as a library with the pt-BR Parakeet `-30s` fine-tune (`custom-7d13a4fb474b2100`). Stock Parakeet v3 is not used: its Portuguese training data is European Portuguese and it cannot be told which language to output (§2.3).
+- A small **bridge** process on the PC accepts the dictation audio over **TCP**, keeps Hex's model resident, and returns text on the same connection. It also sends **live partials** by re-transcribing the uncertain tail while the person speaks.
+- The final text always transcribes the **whole utterance**, so partials are tentative and the client commits only the final result.
+- The phone gets the text through a **custom Android IME** (a voice keyboard) and inserts it with `InputConnection.commitText()`; partials are shown as composing text.
 - **The trigger decides the destination.** Press the phone keyboard's mic → text goes to the phone. Press the PC hotkey → text goes to the PC. No router and no synchronized target selector.
-- The batch path (one WAV per utterance) is the v1. Live partial text is a later, separate feature.
+- The bridge live mode is implemented now, without waiting for Hex #1136/#1470 (§2.5, §6.7).
 
 ---
 
@@ -29,9 +30,10 @@ Use the phone as the only microphone, run the heavy speech model on the PC, and 
 
 - Replacing ZAP or changing the real-time microphone path used by Discord/Zoom.
 - Voice commands or LLM post-processing (punctuation, rewriting, "translate this").
-- Live partial text while the user is still speaking.
 - Multiple simultaneous dictation users/devices.
 - Cloud speech recognition. Everything stays on the LAN and on the PC.
+
+Live partial text is **in scope** (it is implemented in the bridge); it is shown as provisional composing text and replaced by the final transcript.
 
 ---
 
@@ -147,7 +149,7 @@ A search of the Hex and transcribe.cpp GitHub issues and PRs found **no merged i
 | transcribe.cpp | [#252](https://github.com/handy-computer/transcribe.cpp/issues/252) Parakeet v3 loses text on clips of some lengths | open | Batch blocker; reproduced below. |
 | transcribe.cpp | [#215](https://github.com/handy-computer/transcribe.cpp/issues/215) Parakeet streaming commit freezes after a lone-space token | open | Streaming blocker; a fix is offered but not merged. |
 
-Consequence: batch is the only path that works today with the best pt-BR model. Live text for this model would have to be implemented in the bridge (our own version of #1136/#1470), not enabled by a flag.
+Consequence: the **final** transcription is batch — the only path that works today with the best pt-BR model. Live text for this model is implemented in the bridge (v1, §6.7), not enabled by a Hex flag.
 
 ### 2.6 The batch blocker: transcribe.cpp #252
 
@@ -192,7 +194,7 @@ flowchart LR
     end
 
     subgraph PC
-        D[Bridge<br/>Bun + TypeScript] --> E[hex service --embedded<br/>Whisper large-v3-turbo]
+        D[Bridge<br/>Bun + TypeScript] --> E[hex service --embedded<br/>Parakeet -30s pt-BR]
         E --> D
     end
 
@@ -274,6 +276,7 @@ Default port: **59102/TCP**.
 | `0x01` | `DICTATION_START` | UTF-8 JSON (see below) |
 | `0x02` | `AUDIO` | Raw PCM16LE, 48 kHz, mono |
 | `0x03` | `DICTATION_END` | Empty |
+| `0x04` | `PARTIAL` | UTF-8 JSON (bridge → client, live mode only) |
 | `0x81` | `RESULT` | UTF-8 JSON |
 | `0x82` | `ERROR` | UTF-8 JSON |
 
@@ -286,14 +289,32 @@ Default port: **59102/TCP**.
   "channels": 1,
   "format": "s16le",
   "language": "pt",
-  "model": "whisper_large_v3_turbo",
-  "token": "optional-shared-secret"
+  "model": "custom-7d13a4fb474b2100",
+  "token": "optional-shared-secret",
+  "live": true,
+  "liveWindowMs": 4000,
+  "liveStrideMs": 500,
+  "minLiveMs": 800
 }
 ```
 
 - Invalid JSON or a missing required field is `bad-request`. A supported JSON shape with wrong values (for example 16 kHz or stereo) is `unsupported-format`.
-- `language` and `model` are optional. When omitted, the bridge uses its configured defaults. The bridge's configuration wins: a client may ask for a different model, but the bridge refuses it with `bad-request` unless it is the configured one. `language` is **required** for Whisper (it prevents drift); Parakeet and GigaAM ignore it.
+- `language` and `model` are optional. When omitted, the bridge uses its configured defaults. The bridge's configuration wins: a client may ask for a different model, but the bridge refuses it with `bad-request` unless it is the configured one. `language` matters for Whisper; Parakeet and GigaAM ignore it.
 - `token` is optional in v1 and enforced when the bridge is configured with one (see §8).
+- `live` turns on PARTIAL frames. `liveWindowMs` is the tail window re-transcribed on each pass, `liveStrideMs` is how much new audio triggers a pass, and `minLiveMs` is the minimum audio before the first preview. The bridge clamps all three.
+
+`PARTIAL`:
+
+```json
+{
+  "version": 1,
+  "pass": 3,
+  "text": "…",
+  "startMs": 1200,
+  "endMs": 5200,
+  "elapsedMs": 140
+}
+```
 
 `RESULT`:
 
@@ -301,10 +322,11 @@ Default port: **59102/TCP**.
 {
   "version": 1,
   "text": "Criar uma função que soma dois números.",
-  "model": "whisper_large_v3_turbo",
+  "model": "custom-7d13a4fb474b2100",
   "language": "pt",
   "durationMs": 8200,
-  "inferenceMs": 410
+  "inferenceMs": 410,
+  "livePasses": 7
 }
 ```
 
@@ -327,10 +349,13 @@ Default port: **59102/TCP**.
 ```text
 client → START
 client → AUDIO × N
+server → PARTIAL × M          (only when START.live is true; each replaces the previous)
 client → END, then half-closes its write side
 server → RESULT or ERROR, then closes
 ```
 
+- Partials are **tentative**: the client replaces the previous PARTIAL and commits only the final RESULT. It must never append partials to the field.
+- The final RESULT always transcribes the **whole utterance**, not just the last chunk, so partials cannot lose or duplicate words.
 - The bridge ignores `AUDIO` after `END`.
 - The client must not send a second `START` on the same connection.
 - If the client disconnects before `END`, the bridge discards the audio (cancel semantics).
@@ -415,7 +440,7 @@ if (ic != null) {
 
 - `commitText` inserts and moves the cursor. It is the only general mechanism; a normal app cannot write into another app's field.
 - If the connection is null (the user switched apps), discard the text and show a notification/toast.
-- For live partials later, use `setComposingText` (underlined provisional text) and `finishComposingText` — never commit partials repeatedly.
+- For the bridge's `PARTIAL` frames, use `setComposingText` (underlined provisional text) and replace it on each pass; commit only the final `RESULT` with `commitText`. Never commit partials repeatedly.
 - Fields that report no text input (`TYPE_NULL`) and apps that block third-party IMEs will refuse insertion. This is a platform limit, not a bug. (Password fields are fine: an IME is allowed to type into them.)
 
 ### 5.6 State machine
@@ -450,19 +475,20 @@ Reasons: Bun is already installed; the official Hex SDK is TypeScript/ESM-only; 
 
 ### 6.2 Responsibilities
 
-1. Accept TCP connections on `0.0.0.0:59102` (configurable).
+1. Accept TCP connections on `0.0.0.0:59102` (configurable); one active dictation at a time.
 2. Parse frames, validate `DICTATION_START`.
 3. Buffer audio up to `maxSeconds` (default 120 s) and `maxBytes` (default 16 MiB).
-4. On `END`, build a WAV in memory.
-5. Call Hex, serialize requests (one inference at a time), return `RESULT`/`ERROR`.
-6. Close the connection.
+4. When the session is live, re-transcribe the tail at `liveStrideMs`/`liveWindowMs` and send `PARTIAL`; the final pass is always the whole utterance.
+5. On `END`, build a WAV of the whole utterance and return `RESULT`/`ERROR`.
+6. Keep Hex's model resident across sessions; serialize inference (one pass at a time).
+7. Close the connection.
 
 ### 6.3 Hex lifecycle
 
-- `create({ command: ["hex", "service", "--embedded"], model, language })` on first dictation (lazy) or at service start (warm).
-- Keep the transcriber alive across sessions; `close()` after `idleUnloadMs` (default 10 min) to release VRAM, then recreate on demand.
-- Model download happens on the first `create()` and can take minutes; log progress and fail the session with `model-unavailable` until it is ready.
-- One inference at a time. The engine is single-threaded; a second concurrent request answers busy. The bridge queues at most one connection and rejects further ones with `model-busy`.
+- `create({ command: ["hex", "service", "--embedded"], model, language })` at bridge startup (warm). The model stays loaded for the lifetime of the bridge.
+- There is no idle unload in v1: stop the bridge to release VRAM. A future `--idle-unload` can close and recreate the engine.
+- Model download happens on the first `create()` and can take minutes; the bridge logs progress and exits with a clear error if Hex cannot start. A session never starts without a model.
+- One inference at a time. The engine is single-threaded; the bridge serializes requests, allows one active dictation (`model-busy` for a second), and lets an in-flight preview finish before the final pass.
 - Pin the model and language in the bridge configuration; do not depend on the desktop app's current selection.
 
 ### 6.4 WAV
@@ -481,18 +507,53 @@ data <bytes>
 
 | Option | Default | Meaning |
 |---|---|---|
+| `--host` | `127.0.0.1` | TCP listen address; non-loopback requires `--token` |
 | `--port` | `59102` | TCP listen port |
-| `--model` | `whisper_large_v3_turbo` | Hex model id |
-| `--language` | `pt` | Hint; required for Whisper, ignored by Parakeet/GigaAM |
+| `--hex` | `hex` | Hex executable (use the built path if not in `$PATH`) |
+| `--model` | **required** | Hex model id (catalog or imported `custom-<hash>`) |
+| `--language` | `pt` | Hint; ignored by Parakeet/GigaAM |
 | `--max-seconds` | `120` | Audio cap per dictation |
-| `--max-bytes` | `16777216` | Hard byte cap |
-| `--idle-unload` | `600` | Seconds before closing the Hex engine |
-| `--token` | empty | Shared secret required in `START` when set |
-| `--log-transcripts` | `false` | Never log text by default |
+| `--live-window-ms` | `4000` | Tail window per preview |
+| `--live-stride-ms` | `500` | New audio between previews |
+| `--min-live-ms` | `800` | Minimum audio before previews |
+| `--request-timeout-ms` | `120000` | Caller timeout for one inference |
+| `--token` | empty | Shared secret required in `START`; mandatory for a LAN bind |
+| `--log-transcripts` | `false` | Log preview/final text only when explicitly enabled |
 
 ### 6.6 Service
 
 A user unit, `zenith-dictation.service`, with `Restart=on-failure`, logs to the journal. The bridge must start after the network is up but does not need the Zenith server.
+
+### 6.7 Live text (v1, implemented in the bridge)
+
+The bridge does not wait for Hex #1136/#1470. It implements the #1470 idea on top of the resident engine:
+
+- keep the **whole** utterance buffer;
+- every `liveStrideMs` of new audio, transcribe the last `liveWindowMs`;
+- start the window after a short pause when one exists (`findSpeechStart`), so a preview rarely begins mid-word;
+- send a `PARTIAL` with the text; the client **replaces** the previous preview;
+- at `END`, transcribe the **whole utterance** and send `RESULT`.
+
+Why the tail instead of fixed chunks:
+
+- there are no fixed cuts, so no word is lost or duplicated at a join;
+- the final text is always the whole clip, independent of preview quality;
+- the cost is repeated inference on a bounded window, serialized by the engine. A preview in flight delays the final by at most one pass; it never changes the final text.
+
+Trade-offs:
+
+- a preview can start mid-sentence when no pause is found in the first 800 ms of the window;
+- long dictations do more inference work; the final still waits for the last preview;
+- the client must treat partials as provisional. The Android IME will use `setComposingText` for them and `commitText` only for `RESULT`.
+
+The implementation lives in `bridge/` (Bun + `@kitlangton/hex`):
+
+- `src/live-session.ts`: buffer, tail passes, pause heuristic, final pass;
+- `src/hex-client.ts`: resident transcriber and serialized queue;
+- `src/server.ts`: TCP frames and one active dictation;
+- `src/live-test.ts`: end-to-end client that prints every PARTIAL and the final RESULT.
+
+Validated on a 14.2 s FLEURS clip: 17 partials, final text exactly the reference. `bun test` covers the frame codec, WAV container, live scheduler, cancellation and the audio cap; `bun run typecheck` is clean.
 
 ---
 
@@ -501,14 +562,14 @@ A user unit, `zenith-dictation.service`, with `Restart=on-failure`, logs to the 
 ```text
 1. User focuses a text field on the phone and selects the Zenith Voice keyboard.
 2. User presses and holds the mic key.
-3. IME opens TCP to the PC, sends START, starts AudioRecord.
+3. IME opens TCP to the PC, sends START with live: true, starts AudioRecord.
 4. Every 10 ms the recorder emits PCM16; the client buffers and writes 100 ms frames.
-5. User releases.
-6. IME stops the recorder, sends END, half-closes.
-7. Bridge builds a WAV and calls Hex.
-8. Hex returns the text.
-9. Bridge sends RESULT and closes.
-10. IME calls commitText(text, 1) and returns to Idle.
+5. While the person speaks, the bridge re-transcribes the tail and sends PARTIAL;
+   the IME replaces the composing text with each preview.
+6. User releases.
+7. IME stops the recorder, sends END, half-closes.
+8. Bridge waits for an in-flight preview, transcribes the whole utterance, sends RESULT.
+9. IME commits the final text with commitText(text, 1) and returns to Idle.
 ```
 
 PC-target dictation does not use the bridge:
@@ -523,8 +584,8 @@ PC-target dictation does not use the bridge:
 
 ## 8. Security and privacy
 
-- The bridge listens on the LAN. Anyone who can reach port 59102 can make the PC transcribe audio (resource abuse), but cannot read files or run code.
-- **v1:** bind to the LAN and document it. **v1.1:** generate a token on the PC, store it in `zenith_prefs` on the phone, require it in `START`. The protocol already carries the field, so enforcing it is not a breaking change.
+- The bridge binds to `127.0.0.1` by default. To reach it from the phone, bind to a LAN address **and** set `--token`; the bridge refuses a non-loopback host without one. The phone sends the same token in `START`.
+- Anyone with the token can make the PC transcribe audio (resource abuse), but cannot read files or run code.
 - No TLS. Do not expose the port through the router; if remote use is needed, use a VPN (WireGuard) — the same assumption ZAP already makes.
 - Transcripts are not logged by default. Hex's own History is a separate feature; the bridge does not write text to disk.
 - Audio and text stay on the LAN and on the PC. No cloud provider is involved unless the user deliberately configures one in Hex (not part of this design).
@@ -540,14 +601,16 @@ For a 10-second utterance, LAN, GPU inference:
 | Last 100 ms chunk flush after release | 0–100 ms |
 | TCP on Wi-Fi | 1–5 ms |
 | WAV assembly | < 5 ms |
-| Hex inference (Whisper large-v3-turbo, ~19× realtime, Hex benchmark) | ~530 ms |
+| Hex inference (Parakeet `-30s`, ~29× realtime on CPU in the CLI; Vulkan faster) | ~350 ms |
+| In-flight preview to drain | 0–500 ms |
 | Return + `commitText` | < 10 ms |
-| **Total after release** | **~0.6–1.5 s** |
+| **Total after release** | **~0.4–1.0 s** |
 
 Notes:
 
-- The 19× figure is Hex's benchmark on its own hardware, not a guarantee for the RX 6500 XT. CPU fallback can be several times slower. Parakeet is faster (~33×) but unsuitable for pt-BR (§2.3).
-- The first dictation after the engine was unloaded adds model load time (seconds). Keep the engine warm if that hurts.
+- The 29× figure is the CLI benchmark on the Ryzen 7 5700X; the RX 6500 XT is faster for a warm engine. The `-30s` model is a Parakeet v3 fine-tune, so it inherits Parakeet's speed.
+- The bridge loads the model once at startup (~1.4 s); there is no per-dictation load and no idle unload in v1.
+- With live text on, the final waits for at most one tail pass that was already in flight; the previews themselves do not lengthen the final text.
 - The budget excludes the initial model download.
 
 ---
@@ -557,7 +620,7 @@ Notes:
 | Alternative | Why not |
 |---|---|
 | **Integrate ASR into `zenith-server`** | Adds HTTP/JSON/WAV/SSE and model management to the C++ audio path; every change restarts the microphone; couples two very different lifecycles. |
-| **Use Hex `/streams` live API** | Requires the desktop app (or a service) holding a model; 16 kHz only; one stream; lease management. Batch WAV is simpler for v1. Revisit only for live text. |
+| **Use Hex `/streams` live API** | Requires the desktop app (or a service) holding a model; 16 kHz only; one stream; lease management. The bridge implements live text itself (§6.7) with tail passes on the same model. `/streams` would only help with native streaming models, which are English-only (Parakeet Unified) or worse for pt-BR (Nemotron). |
 | **Android `SpeechRecognizer`** | On-device model choice is limited, quality is below Parakeet/Whisper, and the user explicitly wants the PC's compute. |
 | **Clipboard only** | Works today (and KDE Connect can sync clipboards), but requires a manual paste every time. Kept as a fallback and as a Phase 0 validation tool, not as the product. |
 | **Accessibility Service** | Can type into other apps, but is fragile across apps, visible to the user as a security-sensitive service, and restricted by Play policy. The IME is the supported mechanism. |
@@ -570,11 +633,11 @@ Notes:
 
 | Phase | Work | Acceptance |
 |---|---|---|
-| **0 — Validate (zero code)** | Install Hex (RPM), `hex model install whisper_large_v3_turbo`, choose "Zenith Wireless Microphone" as Hex's microphone, dictate in Portuguese with the phone. Also install `parakeet_v3` and repeat a few short phrases to confirm the pt-BR drift described in §2.3. | Whisper text appears in a KDE app; quality is acceptable; latency measured. No English drift on short phrases. |
+| **0 — Validate (zero code)** | Install Hex, set "Zenith Wireless Microphone" as Hex's microphone, and dictate in Portuguese. The pt-BR `-30s` model is converted and imported (§16); Whisper and stock v3 are the comparison points. | Text appears in a KDE app; quality is acceptable; latency measured. Stock v3's pt-PT drift is confirmed on short phrases. |
 | **0.5 — validate on the user's voice** | Record 10–15 phrases (numbers, names, accents, code terms) once. Transcribe the same WAVs with the chosen `-30s` model, Whisper and stock v3. Score errors by hand. | The `-30s` model stays the default unless it fails badly on this speaker; the run also provides the reference recordings for the bridge tests. |
-| **1 — Bridge + test button** | Implement the bridge and a "Test transcription" button in the existing app (or a tiny debug screen) that sends 5 s of audio and shows the result. | Round trip < 2 s for a 10 s utterance; text matches Phase 0 for the same audio; the main error paths (`model-unavailable`, `timeout`, `audio-too-large`) are reachable and shown; the two #252 clips return full text, not empty or truncated. |
-| **2 — IME** | Implement `ZenithImeService`, capture, TCP client, `commitText`, cancel and state machine. | Works in WhatsApp, Chrome and Notes; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
-| **3 — Polish** | Model/language picker, token pairing, undo (`deleteSurroundingText`), PC-target shortcut, optional live text with `nemotron_3_5_asr`. | Each item independently verified. |
+| **1 — Bridge + live test** | The bridge (TCP, resident Hex engine, live tail passes, final whole-clip pass) and the `live-test` client are implemented in `bridge/`. A "Test transcription" button in the app can follow. | `bun run live-test` prints PARTIAL frames while the WAV streams and a final RESULT that matches the reference; round trip < 2 s for a 10 s utterance without live, and the final is not delayed by more than one tail pass with live; the two #252 clips return full text; the main error paths are reachable. |
+| **2 — IME** | Implement `ZenithImeService`, capture, TCP client, `setComposingText` for PARTIAL, `commitText` for RESULT, cancel and state machine. | Works in WhatsApp, Chrome and Notes; partials show underlined and are replaced by the final; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
+| **3 — Polish** | Model/language picker, token pairing, undo (`deleteSurroundingText`), PC-target shortcut, better pause detection. | Each item independently verified. |
 
 Phase 0 is not optional. It answers the biggest unknown — does the model understand this user's Brazilian Portuguese through this microphone? — before any code exists. Phase 0.5 decides the model with evidence instead of a model card.
 
@@ -582,13 +645,14 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 
 ## 12. Open questions
 
-1. **Does `hex service --embedded` start headless on Fedora KDE Wayland** without a display? It needs a Vulkan ICD; the docs say the window needs a driver even for CPU inference. Test before Phase 1.
+1. **Headless `hex service --embedded`:** resolved — the bridge started it without a display and loaded the model on the RX 6500 XT via Vulkan (§6.7).
 2. **VRAM:** one 740–890 MB model is fine; two (desktop + bridge) are probably fine on 4 GB, but Vulkan overhead is unknown. Decide whether the bridge unloads after idle.
 3. **Quality on the user's voice:** confirm the chosen `-30s` model against Whisper and stock v3 on the same recordings. The published `-plus` numbers are not a target; that checkpoint is not public.
 4. **GGUF conversion and Hex import:** resolved — the pt-BR fine-tune was converted (§16), imported as `custom-7d13a4fb474b2100`, checked on the RX 6500 XT via Vulkan, and transcribed the smoke samples correctly. Remaining: run it on the user's voice.
-5. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
-6. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
-7. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt, but verify long holds.
+5. **Live preview quality:** the pause heuristic (`findSpeechStart`, RMS < 0.01 for 100 ms) was tuned on clean 48 kHz audio. Test with the phone's noise floor and the chosen mic/Gain settings; lower the threshold or extend the pause search if previews start mid-word.
+6. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
+7. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
+8. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt, but verify long holds.
 
 ---
 
@@ -597,29 +661,34 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 | Path | Responsibility |
 |---|---|
 | `docs/phone-dictation.md` | This document |
-| `android/.../ime/ZenithImeService.kt` | InputMethodService, view, state machine, `commitText` |
-| `android/.../ime/DictationClient.kt` | TCP connection, frame codec, writer queue, reply parsing |
-| `android/.../ime/DictationProtocol.kt` | Frame types and JSON models shared with the bridge tests |
-| `android/app/src/main/res/xml/method.xml` | IME declaration and subtypes |
-| `android/app/src/main/res/layout/ime_voice.xml` | Voice keyboard layout |
-| `android/app/src/main/AndroidManifest.xml` | Service + `BIND_INPUT_METHOD` |
+| `docs/patches/transcribe-cpp-252-compact-last-mel-frame.patch` | Local fix for the Parakeet v3 batch bug |
+| `bridge/README.md` | Bridge usage, protocol and test instructions |
 | `bridge/package.json` | Bun project, `@kitlangton/hex` dependency |
-| `bridge/src/index.ts` | TCP server, session lifecycle |
+| `bridge/src/index.ts` | Flags, startup, shutdown |
+| `bridge/src/server.ts` | TCP server, frame dispatch, one active dictation |
 | `bridge/src/frames.ts` | Frame codec |
 | `bridge/src/wav.ts` | PCM16 → WAV |
-| `bridge/src/hex-client.ts` | Hex lifecycle and transcription queue |
-| `bridge/src/config.ts` | Flags and defaults |
-| `bridge/zenith-dictation.service` | systemd user unit |
-| `bridge/test/frames.test.ts` | Frame codec, WAV header, oversized/truncated frames |
-| `bridge/test/session.test.ts` | Cancellation, timeouts, error mapping |
-| `android/app/src/test/java/com/zenith/audio/ime/` | Frame codec and state-machine unit tests |
+| `bridge/src/hex-client.ts` | Resident Hex engine and serialized queue |
+| `bridge/src/live-session.ts` | Buffer, tail passes, pause heuristic, final pass |
+| `bridge/src/live-test.ts` | End-to-end client that prints PARTIAL/RESULT |
+| `bridge/test/frames.test.ts` | Frame codec |
+| `bridge/test/wav.test.ts` | WAV container |
+| `bridge/test/live-session.test.ts` | Live scheduler, cancellation, audio cap |
+| `bridge/zenith-dictation.service` | systemd user unit (planned) |
+| `android/.../ime/ZenithImeService.kt` | InputMethodService, view, state machine, composing text/commit (planned) |
+| `android/.../ime/DictationClient.kt` | TCP connection, frame codec, writer queue, reply parsing (planned) |
+| `android/.../ime/DictationProtocol.kt` | Frame types and JSON models shared with the bridge tests (planned) |
+| `android/app/src/main/res/xml/method.xml` | IME declaration and subtypes (planned) |
+| `android/app/src/main/res/layout/ime_voice.xml` | Voice keyboard layout (planned) |
+| `android/app/src/main/AndroidManifest.xml` | Service + `BIND_INPUT_METHOD` (planned) |
+| `android/app/src/test/java/com/zenith/audio/ime/` | Frame codec and state-machine unit tests (planned) |
 
 ---
 
 ## 14. Decision log
 
-- **Batch, not streaming, for v1.** A dictated sentence is a short file, not a call. The WAV path removes resampling, leases, SSE and model-streaming constraints. It requires the local #252 frame-count patch, now validated in Hex; upstreaming it is pending. No merged chunked/live path exists for Parakeet v3/Ultra yet.
-- **The bridge protocol keeps room for partials.** A future `PARTIAL` frame can carry the chunked/live text without changing the audio path.
+- **Batch final, live preview.** The final always transcribes the whole utterance; live text is a series of tentative tail passes. This avoids chunk joins while giving text during speech. The final requires the local #252 patch, now validated in Hex; upstreaming is pending.
+- **The bridge protocol carries partials now.** `PARTIAL` (0x04) is implemented; the client replaces previews and commits only `RESULT`.
 - **TCP for dictation.** Reliability and ordering matter more than milliseconds when the payload is a sentence.
 - **Separate bridge process.** Isolates failures and keeps the C++ audio server untouched.
 - **Trigger decides destination.** No router, no synchronized selector.
