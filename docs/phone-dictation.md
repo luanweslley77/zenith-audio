@@ -132,6 +132,42 @@ Beware of the already-published pt-BR GGUF (`luizhrocha/parakeet-tdt-0.6b-v3-ptB
 - **Not** sending the transcript over UDP without an acknowledgement layer. For a short dictated sentence, TCP is the correct tool.
 - **Not** resampling 48 → 16 kHz in the batch path. The embedded service accepts 48 kHz directly.
 
+### 2.5 Existing work: batch, chunked, and streaming (searched 2026-11-08)
+
+A search of the Hex and transcribe.cpp GitHub issues and PRs found **no merged implementation** of chunked/live transcription for non-streaming models:
+
+| Where | Item | State | What it means |
+|---|---|---|---|
+| Hex | [#1136](https://github.com/anomalyco/hex/issues/1136) Transcribe chunks during dictation for non-streaming models (Parakeet Ultra, v3) | open | The exact feature. The maintainer agrees with the goal; splitting a dictation at pauses needs a product decision (join accuracy vs wait). No implementation. |
+| Hex | [#1470](https://github.com/anomalyco/hex/issues/1470) Live text for Parakeet v3 and Ultra | open | Re-transcribe the uncertain tail every second instead of fixed cuts. Opened by a Portuguese Parakeet v3 user. No implementation. |
+| Hex | [#878](https://github.com/anomalyco/hex/issues/878) Live text for Whisper | open | Technical handoff with a working implementation in a personal fork; not merged. |
+| Hex | [#449](https://github.com/anomalyco/hex/issues/449) Live transcript preview | open | UI preview; related. |
+| Hex | [#957](https://github.com/anomalyco/hex/issues/957) Client-only / server-only modes over LAN or Tailscale | open | Remote transcription. Aligns with the phone→PC direction, but it is a desktop-client proposal and has no implementation. |
+| Hex | [PR #1474](https://github.com/anomalyco/hex/pull/1474) `/dictations` partials | merged | Live text over SSE, but only when the engine's model can stream. |
+| transcribe.cpp | [#252](https://github.com/handy-computer/transcribe.cpp/issues/252) Parakeet v3 loses text on clips of some lengths | open | Batch blocker; reproduced below. |
+| transcribe.cpp | [#215](https://github.com/handy-computer/transcribe.cpp/issues/215) Parakeet streaming commit freezes after a lone-space token | open | Streaming blocker; a fix is offered but not merged. |
+
+Consequence: batch is the only path that works today with the best pt-BR model. Live text for this model would have to be implemented in the bridge (our own version of #1136/#1470), not enabled by a flag.
+
+### 2.6 The batch blocker: transcribe.cpp #252
+
+The **stock Parakeet v3** and the **`-30s` fine-tune** both inherit a length-dependent failure: when the mel frame count is `8k + 1`, the encoder sees one frame past the end of the speech. Roughly one length in eight is affected. Reproduced with Hex 3.3.0 and the stock v3 Q8_0:
+
+```text
+clip 5.04 s              → (empty)
+clip 5.04 s, −1 sample   → "By no possible supposition could this stranger, Fitzroy Simpson, have caused"
+clip 10.56 s             → "His bridle is missing, so that Simpson must have put this on."
+clip 10.56 s, −1 sample  → "... Then, having left the door open behind him, he was leading the horse away over the moor,"
+```
+
+Cause: `pre_encode_stage_lengths` in `src/arch/parakeet/model.cpp` uses `mel_frames` for non-kestrel models, while NeMo counts all but the last mel frame (`mel_frames - 1`). The one-line fix, from wavo's PR #90:
+
+```cpp
+len[0] = hp.kestrel_length_masking ? n_samples / hp.fe_hop_length : mel_frames - 1;
+```
+
+Hex pins `anomalyco/transcribe.cpp` at rev `2778ae4`, which carries the same line. A batch pipeline **must** include this fix (or a padding workaround that avoids `mel_frames % 8 == 1`); without it, dictation randomly returns empty or truncated text. The patch is local to the Hex build; upstreaming it to transcribe.cpp #252 is the durable fix.
+
 ---
 
 ## 3. Architecture
@@ -177,6 +213,8 @@ Analogies: UDP is a postcard — fast, but if it is lost, it is gone. TCP is a r
 Reusing ZAP would also mean duplicating the jitter buffer and PLC in the bridge, and binding a second listener to the server's port. A separate TCP port keeps the dictation path independent: it works while Discord is muted, while the phone is in mic-only mode, or while the server is stopped.
 
 Consequence to accept: **RNNoise and the jitter buffer do not run on this path.** That is intentional. RNNoise is a speech enhancer tuned for calls; ASR models are trained on noisy speech and do not need it. The capture chain still applies the 80 Hz high-pass, gain and soft limiter, because those are cheap and shared with the existing recorder.
+
+A second, unrelated hazard is the Parakeet v3 length bug (§2.6): the batch path must run with the frame-count fix in transcribe.cpp, or with a padding workaround. Without it, roughly one clip length in eight returns empty or loses its last words.
 
 ### 3.3 Why the trigger decides the destination
 
@@ -522,7 +560,7 @@ Notes:
 |---|---|---|
 | **0 — Validate (zero code)** | Install Hex (RPM), `hex model install whisper_large_v3_turbo`, choose "Zenith Wireless Microphone" as Hex's microphone, dictate in Portuguese with the phone. Also install `parakeet_v3` and repeat a few short phrases to confirm the pt-BR drift described in §2.3. | Whisper text appears in a KDE app; quality is acceptable; latency measured. No English drift on short phrases. |
 | **0.5 — validate on the user's voice** | Record 10–15 phrases (numbers, names, accents, code terms) once. Transcribe the same WAVs with the chosen `-30s` model, Whisper and stock v3. Score errors by hand. | The `-30s` model stays the default unless it fails badly on this speaker; the run also provides the reference recordings for the bridge tests. |
-| **1 — Bridge + test button** | Implement the bridge and a "Test transcription" button in the existing app (or a tiny debug screen) that sends 5 s of audio and shows the result. | Round trip < 2 s for a 10 s utterance; text matches Phase 0 for the same audio; the main error paths (`model-unavailable`, `timeout`, `audio-too-large`) are reachable and shown. |
+| **1 — Bridge + test button** | Implement the bridge and a "Test transcription" button in the existing app (or a tiny debug screen) that sends 5 s of audio and shows the result. | Round trip < 2 s for a 10 s utterance; text matches Phase 0 for the same audio; the main error paths (`model-unavailable`, `timeout`, `audio-too-large`) are reachable and shown; the two #252 clips return full text, not empty or truncated. |
 | **2 — IME** | Implement `ZenithImeService`, capture, TCP client, `commitText`, cancel and state machine. | Works in WhatsApp, Chrome and Notes; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
 | **3 — Polish** | Model/language picker, token pairing, undo (`deleteSurroundingText`), PC-target shortcut, optional live text with `nemotron_3_5_asr`. | Each item independently verified. |
 
@@ -568,7 +606,8 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 
 ## 14. Decision log
 
-- **Batch, not streaming, for v1.** A dictated sentence is a short file, not a call. The WAV path removes resampling, leases, SSE and model-streaming constraints.
+- **Batch, not streaming, for v1.** A dictated sentence is a short file, not a call. The WAV path removes resampling, leases, SSE and model-streaming constraints. It is conditional on the #252 frame-count fix (§2.6); no merged chunked/live path exists for Parakeet v3/Ultra yet.
+- **The bridge protocol keeps room for partials.** A future `PARTIAL` frame can carry the chunked/live text without changing the audio path.
 - **TCP for dictation.** Reliability and ordering matter more than milliseconds when the payload is a sentence.
 - **Separate bridge process.** Isolates failures and keeps the C++ audio server untouched.
 - **Trigger decides destination.** No router, no synchronized selector.
