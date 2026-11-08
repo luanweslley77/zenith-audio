@@ -11,7 +11,7 @@
 ## 0. TL;DR
 
 - The phone already sends **48 kHz mono PCM16, 10 ms frames** to the PC over ZAP/UDP 59100.
-- Speech recognition runs on the **PC**, using **Hex** (`hex service --embedded`) as a library.
+- Speech recognition runs on the **PC**, using **Hex** (`hex service --embedded`) as a library, with **Whisper large-v3-turbo** and `language: pt` by default. Stock Parakeet v3 is not used: its Portuguese training data is European Portuguese and it cannot be told which language to output (§2.3).
 - A small **bridge** process on the PC accepts the dictation audio over **TCP**, builds a WAV, asks Hex for the text, and returns it on the same connection.
 - The phone gets the text through a **custom Android IME** (a voice keyboard) and inserts it with `InputConnection.commitText()`.
 - **The trigger decides the destination.** Press the phone keyboard's mic → text goes to the phone. Press the PC hotkey → text goes to the PC. No router and no synchronized target selector.
@@ -69,12 +69,41 @@ Facts that shaped the decision:
 - Upload limits: 64 MiB per clip, 8–192 kHz, 1–8 channels. At 48 kHz mono PCM16, 64 MiB ≈ 11 minutes; our own cap is much lower.
 - `transcribe()` never downloads a model; `create({ model })` downloads and loads one. The first call can therefore be slow.
 - **Streaming models** in the catalog (at this commit): `parakeet_unified_en` (English only) and `nemotron_3_5_asr` (multilingual, includes `pt`). **`parakeet_v3`, `parakeet_ultra`, `whisper_large_v3_turbo` do not stream.**
-- `parakeet_ultra` is Labs-gated. `parakeet_v3` is the stable multilingual default; it auto-detects the language and ignores a language hint.
+- `parakeet_ultra` is Labs-gated. `parakeet_v3` is the stable multilingual default, but for Brazilian Portuguese it is the **wrong** choice: NVIDIA's card says its Portuguese training data is **European Portuguese**, and the model takes no language prompt, so it auto-detects and can drift (see §2.3).
 - Models are Q8_0 GGUF, roughly **740–890 MB** each, so two copies fit in the RX 6500 XT's 4 GB, but running two engines is still wasteful.
 - On Linux, inference uses Vulkan when available and falls back to the CPU. The window still needs a Vulkan driver even for CPU inference. `hex service --embedded` is the path that avoids the window, but it must be verified headless (see §12).
 - On KDE Wayland, Hex pastes through the **RemoteDesktop portal** (not `wtype`), and Live Typing (input-method preedit) is **not** available on KWin.
 
-### 2.3 What this rules out
+### 2.3 Choosing the Portuguese model
+
+The model choice matters more than any code in this document. Parakeet v3 is not a safe default for pt-BR:
+
+- NVIDIA's model card, evaluation note 2: *"our training data uses European Portuguese while most benchmarks use Brazilian Portuguese."* Vocabulary and accent are pt-PT, not pt-BR.
+- The model **has no language input or output**. NVIDIA closed the request for one with *"unfortunately parakeet-v3 model doesn't receive or output language id"* (NVIDIA-NeMo/Speech#14799). It guesses from the audio.
+- Because it guesses, short spans are unstable: a reported 90 s pt-BR recording came out in Portuguese, while a 25 s slice of the same audio came out in fluent English. For hold-to-talk dictation (a few seconds), that is the worst possible failure mode.
+
+Options with evidence (Portuguese WER from a public pt-BR comparison; prepared = read speech, spontaneous = natural speech):
+
+| Model | Prepared | Spontaneous | pt-BR fit | Hex |
+|---|---|---|---|---|
+| pt-BR Parakeet fine-tune (TAGARELA) | **7.5%** | **14.3%** | Best measured; Portuguese by construction, cannot drift | Needs a GGUF conversion for transcribe.cpp |
+| `whisper_large_v3_turbo` | 8.4%* | 23.4%* | Good; accepts `language: pt`, so it cannot drift | Native, GPU, 886 MB |
+| `parakeet_v3` (stock) | 9.0% | 21.8% | Risky: pt-PT training, no language control, English drift | Native, GPU, 740 MB |
+| `nemotron_3_5_asr` | — | 20.7%** | Worse; streaming is its advantage | Native, GPU, 751 MB |
+| `qwen3_asr06_b`, `cohere_transcribe`, `granite_speech_5` | — | — | Unknown for pt-BR; no benchmark found | Native |
+
+\* Whisper **large-v3** numbers; turbo is ~0.4 WER points behind on English benchmarks, so expect a similar small gap.
+\*\* A single 90 s pt-BR recording, not a benchmark; treat as indicative.
+
+Decision:
+
+- **Default:** `whisper_large_v3_turbo` with `language: "pt"`. It is the best pt-BR option that works today without conversion, and the language hint removes the drift failure.
+- **Quality upgrade (spike):** convert the pt-BR Parakeet fine-tune to a transcribe.cpp GGUF and import it with `hex model import`. The public checkpoint is `alexandreacff/parakeet-tdt-v3-ptBR-30s` (2.5 GB `.nemo`); the converter is `scripts/convert-parakeet.py` in `handy-computer/transcribe.cpp`, which already has profiles for v3 fine-tunes. This is a real WER gain on spontaneous speech (14.3% vs 21.8–23.4%), which is exactly dictation. The WER numbers above come from the `-plus` checkpoint; the public `-30s` may differ, so measure it.
+- **Do not** ship stock `parakeet_v3` for pt-BR.
+
+Beware of the already-published pt-BR GGUF (`luizhrocha/parakeet-tdt-0.6b-v3-ptBR-gguf`): it was converted with **parakeet.cpp**, so its metadata uses `parakeet.encoder.*` instead of transcribe.cpp's `stt.parakeet.encoder.*` and `stt.variant`. Hex cannot load it as-is; it is useful only if the bridge runs `parakeet-cli` instead of Hex.
+
+### 2.4 What this rules out
 
 - **Not** integrating ASR into `zenith-server`. The server is the audio transport; adding HTTP/JSON/SSE/WAV to it would couple every dictation change to a restart of the microphone path.
 - **Not** using `/streams` for v1. It needs the desktop app running, only accepts 16 kHz, and its partials depend on the model. The batch WAV path is simpler and model-agnostic.
@@ -93,7 +122,7 @@ flowchart LR
     end
 
     subgraph PC
-        D[Bridge<br/>Bun + TypeScript] --> E[hex service --embedded<br/>Parakeet v3]
+        D[Bridge<br/>Bun + TypeScript] --> E[hex service --embedded<br/>Whisper large-v3-turbo]
         E --> D
     end
 
@@ -185,13 +214,13 @@ Default port: **59102/TCP**.
   "channels": 1,
   "format": "s16le",
   "language": "pt",
-  "model": "parakeet_v3",
+  "model": "whisper_large_v3_turbo",
   "token": "optional-shared-secret"
 }
 ```
 
 - Invalid JSON or a missing required field is `bad-request`. A supported JSON shape with wrong values (for example 16 kHz or stereo) is `unsupported-format`.
-- `language` and `model` are optional. When omitted, the bridge uses its configured defaults. The bridge's configuration wins: a client may ask for a different model, but the bridge refuses it with `bad-request` unless it is the configured one. For `parakeet_v3` the language is auto-detected; the field matters for Whisper and Nemotron.
+- `language` and `model` are optional. When omitted, the bridge uses its configured defaults. The bridge's configuration wins: a client may ask for a different model, but the bridge refuses it with `bad-request` unless it is the configured one. `language` is **required** for Whisper (it prevents drift); Parakeet and GigaAM ignore it.
 - `token` is optional in v1 and enforced when the bridge is configured with one (see §8).
 
 `RESULT`:
@@ -200,7 +229,7 @@ Default port: **59102/TCP**.
 {
   "version": 1,
   "text": "Criar uma função que soma dois números.",
-  "model": "parakeet_v3",
+  "model": "whisper_large_v3_turbo",
   "language": "pt",
   "durationMs": 8200,
   "inferenceMs": 410
@@ -381,8 +410,8 @@ data <bytes>
 | Option | Default | Meaning |
 |---|---|---|
 | `--port` | `59102` | TCP listen port |
-| `--model` | `parakeet_v3` | Hex model id |
-| `--language` | `pt` | Hint; ignored by auto-detect models |
+| `--model` | `whisper_large_v3_turbo` | Hex model id |
+| `--language` | `pt` | Hint; required for Whisper, ignored by Parakeet/GigaAM |
 | `--max-seconds` | `120` | Audio cap per dictation |
 | `--max-bytes` | `16777216` | Hard byte cap |
 | `--idle-unload` | `600` | Seconds before closing the Hex engine |
@@ -439,13 +468,13 @@ For a 10-second utterance, LAN, GPU inference:
 | Last 100 ms chunk flush after release | 0–100 ms |
 | TCP on Wi-Fi | 1–5 ms |
 | WAV assembly | < 5 ms |
-| Hex inference (Parakeet v3, ~33× realtime, Hex benchmark) | ~300 ms |
+| Hex inference (Whisper large-v3-turbo, ~19× realtime, Hex benchmark) | ~530 ms |
 | Return + `commitText` | < 10 ms |
-| **Total after release** | **~0.4–1.0 s** |
+| **Total after release** | **~0.6–1.5 s** |
 
 Notes:
 
-- The 33× figure is Hex's benchmark on its own hardware, not a guarantee for the RX 6500 XT. CPU fallback can be several times slower.
+- The 19× figure is Hex's benchmark on its own hardware, not a guarantee for the RX 6500 XT. CPU fallback can be several times slower. Parakeet is faster (~33×) but unsuitable for pt-BR (§2.3).
 - The first dictation after the engine was unloaded adds model load time (seconds). Keep the engine warm if that hurts.
 - The budget excludes the initial model download.
 
@@ -469,23 +498,25 @@ Notes:
 
 | Phase | Work | Acceptance |
 |---|---|---|
-| **0 — Validate (zero code)** | Install Hex (RPM), `hex model install parakeet_v3`, choose "Zenith Wireless Microphone" as Hex's microphone, dictate in Portuguese with the phone. | Text appears in a KDE app; quality is acceptable; latency measured. If not, try Whisper large-v3-turbo before writing any code. |
+| **0 — Validate (zero code)** | Install Hex (RPM), `hex model install whisper_large_v3_turbo`, choose "Zenith Wireless Microphone" as Hex's microphone, dictate in Portuguese with the phone. Also install `parakeet_v3` and repeat a few short phrases to confirm the pt-BR drift described in §2.3. | Whisper text appears in a KDE app; quality is acceptable; latency measured. No English drift on short phrases. |
+| **0.5 — pt-BR model A/B** | Record 10–15 phrases (numbers, names, accents, code terms) once. Transcribe the same WAVs with Whisper and, if converted, the pt-BR Parakeet fine-tune. Score errors by hand. | A measured winner on this speaker, not a benchmark guess. If the fine-tune wins, convert it and make it the default; otherwise keep Whisper. |
 | **1 — Bridge + test button** | Implement the bridge and a "Test transcription" button in the existing app (or a tiny debug screen) that sends 5 s of audio and shows the result. | Round trip < 2 s for a 10 s utterance; text matches Phase 0 for the same audio; the main error paths (`model-unavailable`, `timeout`, `audio-too-large`) are reachable and shown. |
 | **2 — IME** | Implement `ZenithImeService`, capture, TCP client, `commitText`, cancel and state machine. | Works in WhatsApp, Chrome and Notes; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
 | **3 — Polish** | Model/language picker, token pairing, undo (`deleteSurroundingText`), PC-target shortcut, optional live text with `nemotron_3_5_asr`. | Each item independently verified. |
 
-Phase 0 is not optional. It answers the biggest unknown — does the model understand this user's Portuguese through this microphone? — before any code exists.
+Phase 0 is not optional. It answers the biggest unknown — does the model understand this user's Brazilian Portuguese through this microphone? — before any code exists. Phase 0.5 decides the model with evidence instead of a model card.
 
 ---
 
 ## 12. Open questions
 
 1. **Does `hex service --embedded` start headless on Fedora KDE Wayland** without a display? It needs a Vulkan ICD; the docs say the window needs a driver even for CPU inference. Test before Phase 1.
-2. **VRAM:** one 740 MB model is fine; two (desktop + bridge) are probably fine on 4 GB, but Vulkan overhead is unknown. Decide whether the bridge unloads after idle.
-3. **Portuguese quality:** Parakeet v3 vs Parakeet Ultra (Labs) vs Whisper large-v3-turbo. Measure on the same recordings.
-4. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
-5. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
-6. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt, but verify long holds.
+2. **VRAM:** one 740–890 MB model is fine; two (desktop + bridge) are probably fine on 4 GB, but Vulkan overhead is unknown. Decide whether the bridge unloads after idle.
+3. **pt-BR quality measured:** Whisper large-v3-turbo vs the pt-BR Parakeet fine-tune. Decide by WER on the same recordings, not by a benchmark on someone else's audio. The fine-tune needs a transcribe.cpp GGUF; the public checkpoint is `alexandreacff/parakeet-tdt-v3-ptBR-30s`.
+4. **GGUF conversion feasibility:** can `scripts/convert-parakeet.py` convert the pt-BR fine-tune with a new variant profile (as it did for primeLine's German v3 fine-tune)? The tokenizer and architecture are inherited from v3, so the odds are good; verify with `transcribe-cli` before importing into Hex.
+5. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
+6. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
+7. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt, but verify long holds.
 
 ---
 
@@ -520,8 +551,10 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 - **Separate bridge process.** Isolates failures and keeps the C++ audio server untouched.
 - **Trigger decides destination.** No router, no synchronized selector.
 - **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; no second capture implementation.
+- **Whisper with a language hint for pt-BR.** It is the only native Hex option that both handles Brazilian Portuguese and *cannot* drift to another language.
 - **Do not log transcripts by default.** Voice text is sensitive.
 - **Phase 0 before code.** The model's Portuguese quality is the real risk, not the plumbing.
+- **Do not trust a model card's language list.** "Portuguese" can mean pt-PT; test on the speaker.
 
 ### Do not
 
@@ -532,7 +565,8 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 - Do not use `/streams` without the desktop app running.
 - Do not run two Hex engines if VRAM becomes a problem; unload one.
 - Do not commit partial text; use composing text if live text is ever added.
-- Do not assume `parakeet_v3` honors a language hint; it auto-detects.
+- Do not use stock `parakeet_v3` for pt-BR; it is trained on European Portuguese and has no language control.
+- Do not assume a Parakeet model honors a language hint; Parakeet and GigaAM take none.
 - Do not treat a missing `InputConnection` as recoverable; discard and tell the user.
 
 ---
@@ -543,5 +577,10 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 - Hex live streams contract: `docs/streams.md` in that repository
 - Hex TypeScript SDK: <https://www.npmjs.com/package/@kitlangton/hex>
 - Hex Linux notes (Vulkan, paste, Live typing): `docs/linux.md` in that repository
+- Parakeet v3 model card (see evaluation note 2, European Portuguese): <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>
+- No language id in Parakeet v3 (NVIDIA): <https://github.com/NVIDIA-NeMo/Speech/issues/14799>
+- pt-BR fine-tune and Portuguese WER comparison: <https://huggingface.co/alefiury/parakeet-tdt-0.6b-v3-ptBR-TAGARELA-onnx>
+- pt-BR Parakeet checkpoint: <https://huggingface.co/alexandreacff/parakeet-tdt-v3-ptBR-30s>
+- transcribe.cpp GGUF converter (Hex's engine): <https://github.com/handy-computer/transcribe.cpp>
 - Zenith mic pipeline: [`docs/mic-audio-pipeline.md`](mic-audio-pipeline.md)
 - Zenith protocol: [`protocol/PROTOCOL.md`](../protocol/PROTOCOL.md)
