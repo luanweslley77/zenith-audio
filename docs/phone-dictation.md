@@ -101,7 +101,7 @@ Measured on this machine on 2026-11-08 (same audio for every model; see §16 for
 |---|---|---|---|
 | `-30s` fine-tune (Q8_0) | 7.60% raw · **4.05%** without digit sentences | **18.44%** | **0.73 s** |
 | `whisper_large_v3_turbo` (Q8_0) | **5.00%** raw · 4.50% without digit sentences | 22.95% | 4.51 s |
-| `parakeet_v3` stock (Q8_0) | 5.36% raw · 4.50% without digit sentences | 21.31% | 0.75 s |
+| `parakeet_v3` stock (Q8_0) | 5.45% raw · 4.73% without digit sentences | 21.72% | 0.75 s |
 
 The fine-tune's raw FLEURS number is inflated by **number formatting**, not recognition: it writes "mil e quatrocentos" where the reference has "1.400". On the 42 clips without digits it leads. On spontaneous speech — the closest to dictation — it leads clearly, and it is ~6× faster than Whisper on CPU.
 
@@ -160,13 +160,25 @@ clip 10.56 s             → "His bridle is missing, so that Simpson must have p
 clip 10.56 s, −1 sample  → "... Then, having left the door open behind him, he was leading the horse away over the moor,"
 ```
 
-Cause: `pre_encode_stage_lengths` in `src/arch/parakeet/model.cpp` uses `mel_frames` for non-kestrel models, while NeMo counts all but the last mel frame (`mel_frames - 1`). The one-line fix, from wavo's PR #90:
+Cause: the encoder graph is built with **every** mel frame, including the frontend's final padding frame. NeMo counts all but the last (`pcm.len() / HOP`). The extra frame joins the attention and can blank or truncate the transcript.
 
-```cpp
-len[0] = hp.kestrel_length_masking ? n_samples / hp.fe_hop_length : mel_frames - 1;
+The obvious mask-length change is not enough: `pre_encode_stage_lengths` is only consumed when `kestrel_length_masking` is on, which the v3 family does not set. The extra frame still enters the encoder. The fix must keep the last mel frame out of the graph:
+
+1. derive `graph_mel_frames = mel_frames - 1`;
+2. compact the row-major mel buffer from `[n_mels, mel_frames]` to `[n_mels, graph_mel_frames]`;
+3. build the encoder graph with `graph_mel_frames`, upload the compacted buffer, and pass `graph_mel_frames` to the length masks.
+
+The local patch is [`docs/patches/transcribe-cpp-252-compact-last-mel-frame.patch`](patches/transcribe-cpp-252-compact-last-mel-frame.patch); it touches `run_one_shot_inner` in `src/arch/parakeet/model.cpp`. It drops the last mel frame from the encoder graph, which is what NeMo does. Validated with the patched `transcribe-cli` and with Hex 3.3.0 built against the patched checkout:
+
+```text
+clip 5.04 s              → "By no possible supposition could this stranger, Fitzroy Simpson, have caused"
+clip 10.56 s             → "... Then, having left the door open behind him, he was leading the horse away over the moor,"
+FLEURS pt-BR reference   → unchanged (exact match)
 ```
 
-Hex pins `anomalyco/transcribe.cpp` at rev `2778ae4`, which carries the same line. A batch pipeline **must** include this fix (or a padding workaround that avoids `mel_frames % 8 == 1`); without it, dictation randomly returns empty or truncated text. The patch is local to the Hex build; upstreaming it to transcribe.cpp #252 is the durable fix.
+Hex 3.3.0, rebuilt against the patched checkout, produces the same outputs; the trim workaround is no longer needed. The patch changes the stock v3 numbers slightly (FLEURS 5.36 → 5.45%, TAGARELA 21.31 → 21.72%) while removing the empty/truncated failures; the `-30s` and Whisper results are unchanged. The purpose is reliability, not a WER gain.
+
+Hex pins `anomalyco/transcribe.cpp` at rev `2778ae4`, which carries the same bug. A batch pipeline **must** include this fix (or a padding workaround that avoids `mel_frames % 8 == 1`); without it, dictation randomly returns empty or truncated text. The patch is local to the Hex build; upstreaming it to transcribe.cpp #252 is the durable fix.
 
 ---
 
@@ -606,7 +618,7 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 
 ## 14. Decision log
 
-- **Batch, not streaming, for v1.** A dictated sentence is a short file, not a call. The WAV path removes resampling, leases, SSE and model-streaming constraints. It is conditional on the #252 frame-count fix (§2.6); no merged chunked/live path exists for Parakeet v3/Ultra yet.
+- **Batch, not streaming, for v1.** A dictated sentence is a short file, not a call. The WAV path removes resampling, leases, SSE and model-streaming constraints. It requires the local #252 frame-count patch, now validated in Hex; upstreaming it is pending. No merged chunked/live path exists for Parakeet v3/Ultra yet.
 - **The bridge protocol keeps room for partials.** A future `PARTIAL` frame can carry the chunked/live text without changing the audio path.
 - **TCP for dictation.** Reliability and ordering matter more than milliseconds when the payload is a sentence.
 - **Separate bridge process.** Isolates failures and keeps the C++ audio server untouched.
@@ -763,13 +775,13 @@ Corpora:
 |---|---|---|---|---|
 | `-30s` fine-tune Q8_0 | 7.60% | **4.05%** (42 clips) | **18.44%** | **0.73 s** |
 | `whisper_large_v3_turbo` Q8_0 | **5.00%** | 4.50% (42 clips) | 22.95% | 4.51 s |
-| `parakeet_v3` stock Q8_0 | 5.36% | 4.50% (42 clips) | 21.31% | 0.75 s |
+| `parakeet_v3` stock Q8_0 | 5.45% | 4.73% (42 clips) | 21.72% | 0.75 s |
 
 Interpretation:
 
 - The CLI median includes process start and model load per invocation (≈250 ms for Parakeet, more for Whisper), so it is not the steady-state dictation latency; a resident engine (§6.3) avoids that part.
-- **The fine-tune wins on spontaneous speech**, which is the closest to dictation: 18.44% vs 21.31% (stock) and 22.95% (Whisper). The sample is small, so treat the margin as directional, not precise.
-- **Its raw FLEURS score is inflated by number formatting**, not recognition errors: it writes "mil e quatrocentos" where the reference has "1.400", "oito por cento" for "8%", and so on. Excluding those 8 clips, it leads (4.05% vs 4.50%).
+- **The fine-tune wins on spontaneous speech**, which is the closest to dictation: 18.44% vs 21.72% (stock) and 22.95% (Whisper). The sample is small, so treat the margin as directional, not precise.
+- **Its raw FLEURS score is inflated by number formatting**, not recognition errors: it writes "mil e quatrocentos" where the reference has "1.400", "oito por cento" for "8%", and so on. Excluding those 8 clips, it leads (4.05% vs 4.73%).
 - **Whisper is ~6× slower on CPU** in this setup (4.51 s vs 0.73 s per clip, including process start and model load). On GPU the gap narrows, but Parakeet is the only one that is comfortably real-time on the CPU alone.
 - **Short 3 s slices:** in three samples, neither model drifted to English; the stock model still produced Portuguese. The drift is a real, documented failure mode, but it is not deterministic. Do not treat a small smoke test as proof that it is fixed.
 

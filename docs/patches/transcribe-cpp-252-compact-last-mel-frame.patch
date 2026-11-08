@@ -1,0 +1,65 @@
+diff --git a/src/arch/parakeet/model.cpp b/src/arch/parakeet/model.cpp
+index e8120ba..ff2cc0e 100644
+--- a/src/arch/parakeet/model.cpp
++++ b/src/arch/parakeet/model.cpp
+@@ -1228,6 +1228,11 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+     }
+ 
+     const bool           spk_supervision = (mt != nullptr && mt->use_kernel);
++    // NeMo counts all mel frames but the last: the frontend's final frame is
++    // padding. Building the encoder with it lets an extra frame join the
++    // attention and can drop the whole transcript (#252). Compact it out
++    // before the graph sees the mel.
++    const int graph_mel_frames = mel_n_frames > 1 ? mel_n_frames - 1 : mel_n_frames;
+     // Kernel-mode chunk gating: sanitize the orchestrator's keep list
+     // against the actual pre_encode output length (the orchestrator
+     // builds its chunk grid from the diar frame count, which can trail
+@@ -1236,7 +1241,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+     if (spk_supervision && !mt->keep_enc_frames.empty()) {
+         const bool causal = (pm->hparams.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited);
+         const int  T_pred =
+-            pre_encode_time_out(pre_encode_time_out(pre_encode_time_out(mel_n_frames, causal), causal), causal);
++            pre_encode_time_out(pre_encode_time_out(pre_encode_time_out(graph_mel_frames, causal), causal), causal);
+         mt_keep.reserve(mt->keep_enc_frames.size());
+         for (const int32_t i : mt->keep_enc_frames) {
+             if (i >= 0 && i < T_pred) {
+@@ -1246,7 +1251,18 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+     }
+     const int    mt_keep_frames = static_cast<int>(mt_keep.size());
+     const bool   kestrel_masks  = pm->hparams.kestrel_length_masking;
+-    EncoderBuild eb = build_encoder_graph(pc->compute_ctx, pm->weights, pm->hparams, mel_n_frames, resolved_kv,
++    std::vector<float> mel_graph;
++    const float *      mel_graph_data = pc->mel_buf.data();
++    if (graph_mel_frames != mel_n_frames) {
++        mel_graph.resize(static_cast<size_t>(mel_n_mels) * static_cast<size_t>(graph_mel_frames));
++        for (int m = 0; m < mel_n_mels; ++m) {
++            const float * src = pc->mel_buf.data() + static_cast<size_t>(m) * static_cast<size_t>(mel_n_frames);
++            std::copy_n(src, graph_mel_frames,
++                        mel_graph.data() + static_cast<size_t>(m) * static_cast<size_t>(graph_mel_frames));
++        }
++        mel_graph_data = mel_graph.data();
++    }
++    EncoderBuild eb = build_encoder_graph(pc->compute_ctx, pm->weights, pm->hparams, graph_mel_frames, resolved_kv,
+                                           pm->backend.c_str(), /*buf_mask=*/nullptr, /*n_batch=*/1,
+                                           /*batch_var_len=*/kestrel_masks, spk_supervision, mt_keep_frames);
+     if (eb.mel_in == nullptr || eb.out == nullptr || eb.graph == nullptr) {
+@@ -1276,15 +1292,16 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+ 
+     // Upload the mel; the row-major [num_mels, n_frames] buffer is
+     // byte-identical to the ggml ne=[n_frames, num_mels, 1, 1] input.
+-    ggml_backend_tensor_set(eb.mel_in, pc->mel_buf.data(), 0, pc->mel_buf.size() * sizeof(float));
++    ggml_backend_tensor_set(eb.mel_in, mel_graph_data, 0,
++                            static_cast<size_t>(mel_n_mels) * static_cast<size_t>(graph_mel_frames) * sizeof(float));
+ 
+     transcribe::debug::dump_tensor("enc.mel.in", eb.mel_in, "encoder.mel");
+ 
+     int T_valid = -1;
+     if (kestrel_masks) {
+         std::vector<int> real_tenc;
+-        fill_length_masks(eb, { pre_encode_stage_lengths(pm->hparams, n_samples, mel_n_frames) }, { mel_n_frames },
+-                          static_cast<int>(eb.out->ne[1]), real_tenc);
++        fill_length_masks(eb, { pre_encode_stage_lengths(pm->hparams, n_samples, graph_mel_frames) },
++                          { graph_mel_frames }, static_cast<int>(eb.out->ne[1]), real_tenc);
+         T_valid = real_tenc[0];
+     }
+ 
