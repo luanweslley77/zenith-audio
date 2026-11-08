@@ -86,8 +86,8 @@ Options with evidence (Portuguese WER from a public pt-BR comparison; prepared =
 
 | Model | Prepared | Spontaneous | pt-BR fit | Hex |
 |---|---|---|---|---|
-| pt-BR Parakeet fine-tune (TAGARELA) | **7.5%** | **14.3%** | Best measured; Portuguese by construction, cannot drift | Needs a GGUF conversion for transcribe.cpp |
-| `whisper_large_v3_turbo` | 8.4%* | 23.4%* | Good; accepts `language: pt`, so it cannot drift | Native, GPU, 886 MB |
+| pt-BR Parakeet fine-tune (TAGARELA) | **7.5%** | **14.3%** | Best measured; Portuguese by construction, no language detection to fail | Needs a GGUF conversion for transcribe.cpp |
+| `whisper_large_v3_turbo` | 8.4%* | 23.4%* | Good; the `pt` hint prevents the Parakeet-style silent language switch | Native, GPU, 886 MB |
 | `parakeet_v3` (stock) | 9.0% | 21.8% | Risky: pt-PT training, no language control, English drift | Native, GPU, 740 MB |
 | `nemotron_3_5_asr` | — | 20.7%** | Worse; streaming is its advantage | Native, GPU, 751 MB |
 | `qwen3_asr06_b`, `cohere_transcribe`, `granite_speech_5` | — | — | Unknown for pt-BR; no benchmark found | Native |
@@ -97,7 +97,7 @@ Options with evidence (Portuguese WER from a public pt-BR comparison; prepared =
 
 Decision:
 
-- **Default:** `whisper_large_v3_turbo` with `language: "pt"`. It is the best pt-BR option that works today without conversion, and the language hint removes the drift failure.
+- **Default:** `whisper_large_v3_turbo` with `language: "pt"`. It is the best pt-BR option that works today without conversion, and the language hint removes the failure mode where the output silently changes language.
 - **Quality upgrade (spike):** convert the pt-BR Parakeet fine-tune to a transcribe.cpp GGUF and import it with `hex model import`. The public checkpoint is `alexandreacff/parakeet-tdt-v3-ptBR-30s` (2.5 GB `.nemo`); the converter is `scripts/convert-parakeet.py` in `handy-computer/transcribe.cpp`, which already has profiles for v3 fine-tunes. This is a real WER gain on spontaneous speech (14.3% vs 21.8–23.4%), which is exactly dictation. The WER numbers above come from the `-plus` checkpoint; the public `-30s` may differ, so measure it.
 - **Do not** ship stock `parakeet_v3` for pt-BR.
 
@@ -551,7 +551,7 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 - **Separate bridge process.** Isolates failures and keeps the C++ audio server untouched.
 - **Trigger decides destination.** No router, no synchronized selector.
 - **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; no second capture implementation.
-- **Whisper with a language hint for pt-BR.** It is the only native Hex option that both handles Brazilian Portuguese and *cannot* drift to another language.
+- **Whisper with a language hint for pt-BR.** It is the only native Hex option that both handles Brazilian Portuguese and prevents the output language from silently changing.
 - **Do not log transcripts by default.** Voice text is sensitive.
 - **Phase 0 before code.** The model's Portuguese quality is the real risk, not the plumbing.
 - **Do not trust a model card's language list.** "Portuguese" can mean pt-PT; test on the speaker.
