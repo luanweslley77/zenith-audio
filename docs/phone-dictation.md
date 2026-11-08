@@ -640,6 +640,10 @@ The converter dispatches on the output directory's slug, so the profile key must
 ### 16.2 Commands
 
 ```bash
+# 0. Where the model artifacts live (outside the repo; the F32 needs ~2.4 GB)
+export MODELS="$HOME/.cache/parakeet-spike/models"
+mkdir -p "$MODELS"
+
 # 1. Converter checkout
 git clone --depth 1 https://github.com/handy-computer/transcribe.cpp
 cd transcribe.cpp
