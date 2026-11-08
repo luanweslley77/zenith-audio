@@ -82,11 +82,11 @@ The model choice matters more than any code in this document. Parakeet v3 is not
 - The model **has no language input or output**. NVIDIA closed the request for one with *"unfortunately parakeet-v3 model doesn't receive or output language id"* (NVIDIA-NeMo/Speech#14799). It guesses from the audio.
 - Because it guesses, short spans are unstable: a reported 90 s pt-BR recording came out in Portuguese, while a 25 s slice of the same audio came out in fluent English. For hold-to-talk dictation (a few seconds), that is the worst possible failure mode.
 
-Options with evidence (Portuguese WER from a public pt-BR comparison; prepared = read speech, spontaneous = natural speech):
+Options with external evidence (Portuguese WER from a public pt-BR comparison; prepared = read speech, spontaneous = natural speech):
 
 | Model | Prepared | Spontaneous | pt-BR fit | Hex |
 |---|---|---|---|---|
-| pt-BR Parakeet fine-tune (TAGARELA) | **7.5%** | **14.3%** | Best measured; Portuguese by construction, no language detection to fail | Needs a GGUF conversion for transcribe.cpp |
+| pt-BR Parakeet fine-tune (TAGARELA) | **7.5%** | **14.3%** | Portuguese by construction, no language detection to fail | Converted; see §16 |
 | `whisper_large_v3_turbo` | 8.4%* | 23.4%* | Good; the `pt` hint prevents the Parakeet-style silent language switch | Native, GPU, 886 MB |
 | `parakeet_v3` (stock) | 9.0% | 21.8% | Risky: pt-PT training, no language control, English drift | Native, GPU, 740 MB |
 | `nemotron_3_5_asr` | — | 20.7%** | Worse; streaming is its advantage | Native, GPU, 751 MB |
@@ -95,11 +95,22 @@ Options with evidence (Portuguese WER from a public pt-BR comparison; prepared =
 \* Whisper **large-v3** numbers; turbo is ~0.4 WER points behind on English benchmarks, so expect a similar small gap.
 \*\* A single 90 s pt-BR recording, not a benchmark; treat as indicative.
 
+Measured on this machine on 2026-11-08 (same audio for every model; see §16 for the corpus):
+
+| Model | FLEURS (read, 50 clips) | TAGARELA (spontaneous, 10 clips) | CLI median, per clip |
+|---|---|---|---|
+| pt-BR fine-tune (Q8_0) | 7.60% raw · **4.05%** without digit sentences | **18.44%** | **0.73 s** |
+| `whisper_large_v3_turbo` (Q8_0) | **5.00%** raw · 4.50% without digit sentences | 22.95% | 4.51 s |
+| `parakeet_v3` stock (Q8_0) | 5.36% raw · 4.50% without digit sentences | 21.31% | 0.75 s |
+
+The fine-tune's raw FLEURS number is inflated by **number formatting**, not recognition: it writes "mil e quatrocentos" where the reference has "1.400". On the 42 clips without digits it leads. On spontaneous speech — the closest to dictation — it leads clearly, and it is ~6× faster than Whisper on CPU.
+
 Decision:
 
-- **Default:** `whisper_large_v3_turbo` with `language: "pt"`. It is the best pt-BR option that works today without conversion, and the language hint removes the failure mode where the output silently changes language.
-- **Quality upgrade (spike):** convert the pt-BR Parakeet fine-tune to a transcribe.cpp GGUF and import it with `hex model import`. The public checkpoint is `alexandreacff/parakeet-tdt-v3-ptBR-30s` (2.5 GB `.nemo`); the converter is `scripts/convert-parakeet.py` in `handy-computer/transcribe.cpp`, which already has profiles for v3 fine-tunes. This is a real WER gain on spontaneous speech (14.3% vs 21.8–23.4%), which is exactly dictation. The WER numbers above come from the `-plus` checkpoint; the public `-30s` may differ, so measure it.
+- **Quality choice:** the pt-BR Parakeet fine-tune. It is converted and validated (§16); import it into Hex and test it on the user's own voice before making it the default.
+- **Safe default until the import is verified:** `whisper_large_v3_turbo` with `language: "pt"`. It is the best pt-BR option that needs no conversion, and the language hint removes the failure mode where the output silently changes language.
 - **Do not** ship stock `parakeet_v3` for pt-BR.
+- **Number formatting:** the fine-tune spells numbers out. If digits are wanted, add an inverse text normalization step later; do not change the acoustic model for it.
 
 Beware of the already-published pt-BR GGUF (`luizhrocha/parakeet-tdt-0.6b-v3-ptBR-gguf`): it was converted with **parakeet.cpp**, so its metadata uses `parakeet.encoder.*` instead of transcribe.cpp's `stt.parakeet.encoder.*` and `stt.variant`. Hex cannot load it as-is; it is useful only if the bridge runs `parakeet-cli` instead of Hex.
 
@@ -499,7 +510,7 @@ Notes:
 | Phase | Work | Acceptance |
 |---|---|---|
 | **0 — Validate (zero code)** | Install Hex (RPM), `hex model install whisper_large_v3_turbo`, choose "Zenith Wireless Microphone" as Hex's microphone, dictate in Portuguese with the phone. Also install `parakeet_v3` and repeat a few short phrases to confirm the pt-BR drift described in §2.3. | Whisper text appears in a KDE app; quality is acceptable; latency measured. No English drift on short phrases. |
-| **0.5 — pt-BR model A/B** | Record 10–15 phrases (numbers, names, accents, code terms) once. Transcribe the same WAVs with Whisper and, if converted, the pt-BR Parakeet fine-tune. Score errors by hand. | A measured winner on this speaker, not a benchmark guess. If the fine-tune wins, convert it and make it the default; otherwise keep Whisper. |
+| **0.5 — pt-BR model A/B** | Record 10–15 phrases (numbers, names, accents, code terms) once. Transcribe the same WAVs with the pt-BR Parakeet fine-tune (converted; see §16), Whisper and stock v3. Score errors by hand. | A measured winner on this speaker, not a benchmark guess. If the fine-tune wins, import it into Hex and make it the default; otherwise keep Whisper. |
 | **1 — Bridge + test button** | Implement the bridge and a "Test transcription" button in the existing app (or a tiny debug screen) that sends 5 s of audio and shows the result. | Round trip < 2 s for a 10 s utterance; text matches Phase 0 for the same audio; the main error paths (`model-unavailable`, `timeout`, `audio-too-large`) are reachable and shown. |
 | **2 — IME** | Implement `ZenithImeService`, capture, TCP client, `commitText`, cancel and state machine. | Works in WhatsApp, Chrome and Notes; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
 | **3 — Polish** | Model/language picker, token pairing, undo (`deleteSurroundingText`), PC-target shortcut, optional live text with `nemotron_3_5_asr`. | Each item independently verified. |
@@ -513,7 +524,7 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 1. **Does `hex service --embedded` start headless on Fedora KDE Wayland** without a display? It needs a Vulkan ICD; the docs say the window needs a driver even for CPU inference. Test before Phase 1.
 2. **VRAM:** one 740–890 MB model is fine; two (desktop + bridge) are probably fine on 4 GB, but Vulkan overhead is unknown. Decide whether the bridge unloads after idle.
 3. **pt-BR quality measured:** Whisper large-v3-turbo vs the pt-BR Parakeet fine-tune. Decide by WER on the same recordings, not by a benchmark on someone else's audio. The fine-tune needs a transcribe.cpp GGUF; the public checkpoint is `alexandreacff/parakeet-tdt-v3-ptBR-30s`.
-4. **GGUF conversion feasibility:** can `scripts/convert-parakeet.py` convert the pt-BR fine-tune with a new variant profile (as it did for primeLine's German v3 fine-tune)? The tokenizer and architecture are inherited from v3, so the odds are good; verify with `transcribe-cli` before importing into Hex.
+4. **GGUF conversion:** resolved — `scripts/convert-parakeet.py` converted the pt-BR fine-tune with a new variant profile and `prefer_direct_load`, and `transcribe-cli` loads the Q8_0 file (§16). Remaining: import it into Hex and confirm the picker/runtime.
 5. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
 6. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
 7. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt, but verify long holds.
@@ -551,10 +562,12 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 - **Separate bridge process.** Isolates failures and keeps the C++ audio server untouched.
 - **Trigger decides destination.** No router, no synchronized selector.
 - **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; no second capture implementation.
-- **Whisper with a language hint for pt-BR.** It is the only native Hex option that both handles Brazilian Portuguese and prevents the output language from silently changing.
+- **Whisper with a language hint for pt-BR.** It is the safe native fallback that handles Brazilian Portuguese and prevents the output language from silently changing.
+- **The pt-BR Parakeet fine-tune is the quality choice**, validated on read and spontaneous speech (§16); import it into Hex before making it the default.
 - **Do not log transcripts by default.** Voice text is sensitive.
 - **Phase 0 before code.** The model's Portuguese quality is the real risk, not the plumbing.
 - **Do not trust a model card's language list.** "Portuguese" can mean pt-PT; test on the speaker.
+- **Number formatting is not a recognition error.** Do not pick a model by raw WER when one spells numbers and the other emits digits.
 
 ### Do not
 
@@ -584,3 +597,117 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 - transcribe.cpp GGUF converter (Hex's engine): <https://github.com/handy-computer/transcribe.cpp>
 - Zenith mic pipeline: [`docs/mic-audio-pipeline.md`](mic-audio-pipeline.md)
 - Zenith protocol: [`protocol/PROTOCOL.md`](../protocol/PROTOCOL.md)
+
+---
+
+## 16. Appendix: converting the pt-BR Parakeet fine-tune (validated)
+
+**Status (2026-11-08):** converted, quantized and validated with `transcribe-cli`. **Not yet imported into Hex**, because Hex was not installed on the test machine. The GGUF header is compatible (see §16.3).
+
+### 16.1 What was converted
+
+| Item | Value |
+|---|---|
+| Checkpoint | `alexandreacff/parakeet-tdt-v3-ptBR-30s` (public, CC-BY-4.0) |
+| Source | 2.5 GB `.nemo` (POSIX tar: `model_config.yaml`, `model_weights.ckpt`, `*_tokenizer.model`) |
+| Engine | `handy-computer/transcribe.cpp` |
+| Converter | `scripts/convert-parakeet.py` |
+| Variant slug | `parakeet-tdt-v3-ptBR-30s` |
+| Output | 706 MB Q8_0 GGUF |
+
+The converter dispatches on the output directory's slug, so the profile key must match it. The entry added:
+
+```python
+"parakeet-tdt-v3-ptBR-30s": {
+    "variant": "tdt-0.6b-v3-ptbr",
+    "display_name": "Parakeet TDT 0.6B v3 pt-BR (TAGARELA)",
+    "version": "v3",
+    "size_label": "0.6B",
+    "head_kind": "tdt",
+    "expected_vocab_size": 8192,
+    "languages": ["pt"],
+    "lang_detect": False,
+    "prefer_direct_load": True,
+    "author": "alexandreacff",
+    "license": "cc-by-4.0",
+    "license_name": "Creative Commons Attribution 4.0",
+    "license_link": "https://creativecommons.org/licenses/by/4.0/",
+},
+```
+
+`prefer_direct_load: True` makes the converter read the `.nemo` tar directly (`_load_nemo_archive_directly`) instead of instantiating NeMo. That is what allowed a small CPU-only environment instead of the repo's full `scripts/envs/parakeet` (torch cu129 + NeMo). The fine-tune keeps v3's architecture and 8192-token SPM, so no converter changes beyond the profile were needed.
+
+### 16.2 Commands
+
+```bash
+# 1. Converter checkout
+git clone --depth 1 https://github.com/handy-computer/transcribe.cpp
+cd transcribe.cpp
+
+# 2. Minimal environment (no NeMo; CPU torch)
+uv venv --python 3.12 /tmp/parakeet-convert
+uv pip install --python /tmp/parakeet-convert/bin/python --torch-backend cpu \
+    torch numpy gguf omegaconf sentencepiece pyyaml
+
+# 3. Add the profile above to scripts/convert-parakeet.py
+
+# 4. Convert (the output's parent directory is the slug)
+mkdir -p "$MODELS/parakeet-tdt-v3-ptBR-30s"
+/tmp/parakeet-convert/bin/python scripts/convert-parakeet.py \
+    "$MODELS/parakeet-tdt-v3-ptBR-30s.nemo" \
+    "$MODELS/parakeet-tdt-v3-ptBR-30s/parakeet-tdt-v3-ptBR-30s-F32.gguf"
+
+# 5. Quantize to the type Hex runs
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DTRANSCRIBE_BUILD_TOOLS=ON
+cmake --build build -j"$(nproc)"
+build/bin/transcribe-quantize \
+    "$MODELS/parakeet-tdt-v3-ptBR-30s/parakeet-tdt-v3-ptBR-30s-F32.gguf" \
+    "$MODELS/parakeet-tdt-v3-ptBR-30s/parakeet-tdt-v3-ptBR-30s-Q8_0.gguf" \
+    --quant Q8_0
+
+# 6. Smoke test
+build/bin/transcribe-cli -q -m "$MODELS/.../...-Q8_0.gguf" -l pt sample.wav
+```
+
+The conversion needs ~2.4 GB for the F32 intermediate; delete it after quantization. Do not run it in a 7 GB tmpfs — the F32 file will fill it.
+
+### 16.3 Resulting metadata (Hex import check)
+
+```text
+general.architecture = parakeet
+stt.variant          = tdt-0.6b-v3-ptbr
+general.languages    = ['pt']
+general.version      = v3
+tensor types         = 424 F32, 48 F16, 225 Q8_0
+```
+
+Hex accepts architectures `parakeet`, `whisper`, `qwen3_asr`, `cohere_asr`, `sensevoice` and `gigaam`; it accepts tensor types F32, F16 and Q8_0. This file matches. Import with `hex model import <path>` (Labs), then select the `custom-<hash>` id.
+
+### 16.4 Measured results
+
+Corpora:
+
+- **FLEURS pt_br dev**, 50 clips, 1119 reference words: read speech, clean, 16 kHz.
+- **TAGARELA test**, 10 clips, 244 reference words: spontaneous podcast speech, `accent=pt-br`.
+
+| Model | FLEURS raw | FLEURS without digit sentences | TAGARELA spontaneous | CLI median per clip |
+|---|---|---|---|---|
+| pt-BR fine-tune Q8_0 | 7.60% | **4.05%** (42 clips) | **18.44%** | **0.73 s** |
+| `whisper_large_v3_turbo` Q8_0 | **5.00%** | 4.50% (42 clips) | 22.95% | 4.51 s |
+| `parakeet_v3` stock Q8_0 | 5.36% | 4.50% (42 clips) | 21.31% | 0.75 s |
+
+Interpretation:
+
+- The CLI median includes process start and model load per invocation (≈250 ms for Parakeet, more for Whisper), so it is not the steady-state dictation latency; a resident engine (§6.3) avoids that part.
+- **The fine-tune wins on spontaneous speech**, which is the closest to dictation: 18.44% vs 21.31% (stock) and 22.95% (Whisper). The sample is small, so treat the margin as directional, not precise.
+- **Its raw FLEURS score is inflated by number formatting**, not recognition errors: it writes "mil e quatrocentos" where the reference has "1.400", "oito por cento" for "8%", and so on. Excluding those 8 clips, it leads (4.05% vs 4.50%).
+- **Whisper is ~6× slower on CPU** in this setup (4.51 s vs 0.73 s per clip, including process start and model load). On GPU the gap narrows, but Parakeet is the only one that is comfortably real-time on the CPU alone.
+- **Short 3 s slices:** in three samples, neither model drifted to English; the stock model still produced Portuguese. The drift is a real, documented failure mode, but it is not deterministic. Do not treat a small smoke test as proof that it is fixed.
+
+### 16.5 Caveats
+
+- FLEURS is read speech; TAGARELA is spontaneous but only 10 clips. The user's own voice remains the decisive test (Phase 0.5).
+- The published 7.5% prepared / 14.3% spontaneous figures refer to the `-plus` checkpoint; this conversion used the public `-30s`, which measured 7.60% raw / 18.44% here.
+- The fine-tune spells numbers out. If digits are preferred, add inverse text normalization in the bridge; it is a formatting step, not a reason to change models.
+- The GGUF was validated with `transcribe-cli` (same loader as Hex). The Hex import itself is still pending.
+
