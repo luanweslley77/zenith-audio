@@ -649,6 +649,7 @@ git clone --depth 1 https://github.com/handy-computer/transcribe.cpp
 cd transcribe.cpp
 
 # 2. Minimal environment (no NeMo; CPU torch)
+#    uv creates a private Python + package folder; nothing is installed system-wide.
 uv venv --python 3.12 /tmp/parakeet-convert
 uv pip install --python /tmp/parakeet-convert/bin/python --torch-backend cpu \
     torch numpy gguf omegaconf sentencepiece pyyaml
