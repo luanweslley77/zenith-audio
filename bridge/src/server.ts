@@ -275,20 +275,20 @@ export function createBridge(options: BridgeOptions): net.Server {
       }
     });
 
-    socket.on("close", () => {
+    const teardown = (): void => {
       clearIdle();
       session?.cancel();
       if (activeSocket === socket) activeSocket = null;
-    });
+    };
+
+    socket.on("close", teardown);
 
     socket.on("end", () => {
       // The client half-closed after END: finish() is still transcribing and
       // must keep the writable side open to deliver RESULT. Without END the
       // dictation was abandoned, so discard the audio and close our side.
       if (!ended) {
-        clearIdle();
-        session?.cancel();
-        if (activeSocket === socket) activeSocket = null;
+        teardown();
         if (!socket.destroyed) socket.end();
       }
     });
