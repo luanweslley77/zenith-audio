@@ -124,7 +124,10 @@ export function createBridge(options: BridgeOptions): net.Server {
   // clear the slot for a newer session.
   let activeSocket: net.Socket | null = null;
 
-  return net.createServer((socket) => {
+  // allowHalfOpen is required: the client sends END and shuts down its write
+  // side while it still waits for the RESULT. Without it Node closes the
+  // writable side as soon as the client's FIN arrives, losing the reply.
+  return net.createServer({ allowHalfOpen: true }, (socket) => {
     let session: LiveSession | null = null;
     let started = false;
     let ended = false;
@@ -276,6 +279,18 @@ export function createBridge(options: BridgeOptions): net.Server {
       clearIdle();
       session?.cancel();
       if (activeSocket === socket) activeSocket = null;
+    });
+
+    socket.on("end", () => {
+      // The client half-closed after END: finish() is still transcribing and
+      // must keep the writable side open to deliver RESULT. Without END the
+      // dictation was abandoned, so discard the audio and close our side.
+      if (!ended) {
+        clearIdle();
+        session?.cancel();
+        if (activeSocket === socket) activeSocket = null;
+        if (!socket.destroyed) socket.end();
+      }
     });
     socket.on("error", () => {
       socket.destroy();
