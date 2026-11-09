@@ -129,6 +129,10 @@ ERROR codes: `bad-frame`, `bad-request`, `unsupported-format`,
 `audio-too-large`, `model-busy`, `model-unavailable`,
 `transcription-failed`, `timeout`, `internal`.
 
+After END the client may half-close its write side (`shutdownOutput`). The
+bridge keeps its own write side open until it has sent RESULT/ERROR, and a
+half-close without END cancels the dictation.
+
 ## End-to-end test
 
 Create a 48 kHz mono WAV and send it in real time (or 10× faster):
@@ -153,7 +157,8 @@ bun run typecheck
 ```
 
 The tests cover the frame codec, the WAV container, the live scheduler with a
-fake transcriber, cancellation and the audio cap. They do not need Hex, a
+fake transcriber, cancellation, the audio cap, and the socket lifecycle
+(half-close after END and abandonment without END). They do not need Hex, a
 model or a microphone.
 
 ## Notes
@@ -166,5 +171,6 @@ model or a microphone.
 - A failed preview is ignored; the final transcription still runs.
 - The model is loaded once at bridge startup (or the process exits with a clear
   error if Hex cannot start).
-- This is the v1 protocol. The Android IME is the next piece; it consumes the
-  same frames and uses composing text for partials.
+- This is the v1 protocol. The Android IME (`android/.../ime/`) consumes the
+  same frames: it sends START, 100 ms AUDIO frames and END, shows PARTIAL
+  frames as composing text and commits the final RESULT.

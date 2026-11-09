@@ -1,7 +1,7 @@
 # Zenith Audio — Phone Dictation (design)
 
-> **Last updated:** 2026-11-08
-> **Status:** design only. Nothing in this document is implemented yet.
+> **Last updated:** 2026-11-09
+> **Status:** bridge and Android IME implemented. The IME still needs validation on the phone (Phase 2 acceptance).
 > **Branch:** `feat/phone-dictation`, stacked on `feat/mic-quality` (which is stacked on PR #2).
 > **Scope:** phone microphone → PC speech recognition → text inserted on the phone or on the PC.
 > **Purpose:** record the decisions before the code exists, so the implementation does not drift into a worse architecture.
@@ -358,6 +358,7 @@ server → RESULT or ERROR, then closes
 - The final RESULT always transcribes the **whole utterance**, not just the last chunk, so partials cannot lose or duplicate words.
 - The bridge ignores `AUDIO` after `END`.
 - The client must not send a second `START` on the same connection.
+- Half-close is part of the contract. The client sends `END` and then shuts down its write side; the bridge runs with `allowHalfOpen: true` so it can still write `RESULT`/`ERROR` after the client's FIN. A half-close **without** `END` cancels the session and frees the single dictation slot.
 - If the client disconnects before `END`, the bridge discards the audio (cancel semantics).
 - The text is UTF-8 and may be empty (silence or unrecognized speech); the IME then inserts nothing.
 
@@ -397,29 +398,41 @@ A compact voice keyboard, **not** a full QWERTY:
 
 - a large press-and-hold microphone button;
 - a status line ("Conectando…", "Ouvindo…", "Transcrevendo…");
-- a cancel button while recording;
+- a cancel button while a session is active;
 - a keyboard-switch button (`switchToNextInputMethod`) so the user can return to Gboard;
-- a settings shortcut (server IP, bridge port, model, language).
+- a settings button that opens the main app.
 
-The PC address comes from the existing `server_ip` preference, filled by `ServerDiscovery`; the bridge port defaults to `59102` and is stored next to it. No new pairing UI is required.
+The PC address comes from the existing `server_ip` preference, filled by `ServerDiscovery`; the bridge port defaults to `59102` and is stored next to it. The main app has a "Voice keyboard" card that edits `dictation_port` and `dictation_token` and opens the system IME settings. The token is edited in the app, not inside the IME: an editable field inside an IME window would route input through the IME itself, which has no QWERTY keyboard by design.
 
 Use classic Android Views for v1. Compose inside an IME needs a `ComposeView` plus a lifecycle owner and adds failure modes for no user benefit in a screen with three controls. The main activity already uses Compose; the IME can stay on Views until it grows.
 
 ### 5.3 Capture
 
-Reuse `MicAudioRecorder` **as-is** for v1:
+Reuse `MicAudioRecorder` with raw-frame mode (`packetize = false`), which is a
+small constructor flag, not a second capture implementation:
 
 ```kotlin
 MicAudioRecorder(
     context = this,
     sendAudioPacket = { frame -> dictationClient.enqueue(frame) },
-    sendControlPacket = { /* no-op: ZAP controls do not apply here */ }
-).apply { applySettings(readMicSettings(), restartIfRecording = false) }
+    sendControlPacket = { /* no-op: ZAP controls do not apply here */ },
+    packetize = false
+).apply { applySettings(MicSettingsStore.read(this), restartIfRecording = false) }
 ```
 
-This gives dictation the same source mode, input device, gain and limiter the user configured for calls. The noise-suppression control packet is ignored, which is correct: RNNoise is not part of this path. `start()` returns `false` when the device or permission is unavailable; the IME must surface that and close the connection instead of recording.
+With `packetize = false` the recorder keeps its source mode, input device,
+80 Hz high-pass, gain and limiter, but hands over raw PCM16 frames and sends no
+ZAP control packets. That is what the TCP protocol expects; stripping a ZAP
+header inside the IME would make it depend on a transport it does not use.
 
-Refactor only if the class grows: extract `MicDsp` (high-pass, gain, limiter) and a `MicFrameSink` interface. Do not rewrite it for the MVP.
+`MicSettingsStore` is the shared reader for the `zenith_prefs` microphone keys,
+so the streaming service and the IME always apply the same source, device,
+gain and limiter. `start()` returns `false` when the device or permission is
+unavailable; the IME surfaces that and closes the connection instead of
+recording.
+
+Refactor only if the class grows: extract `MicDsp` (high-pass, gain, limiter)
+and a `MicFrameSink` interface. Do not rewrite it for the MVP.
 
 ### 5.4 Sending
 
@@ -462,6 +475,26 @@ Idle ──press──▶ Connecting ──ok──▶ Recording ──release�
 - Do not run the IME's capture while the Zenith mic service is also capturing, unless concurrent capture is verified on the device. Prefer to pause the service during dictation; Android 11 on the Poco X3 may give the audio to only one client.
 - Do not keep the screen awake with a wakelock for a hold-to-talk gesture; the IME is visible and focused while the key is held.
 - Do not commit `""` (it can clear a selection); skip empty results.
+
+### 5.8 Build and enable
+
+```bash
+cd android
+ANDROID_HOME="$HOME/Android/Sdk" ./gradlew :app:assembleDebug :app:testDebugUnitTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+# Enable and select the IME (the system dialog is also reachable from the app)
+adb shell ime enable com.zenith.audio/.ime.ZenithImeService
+adb shell ime set com.zenith.audio/.ime.ZenithImeService
+```
+
+On the PC, start the bridge bound to the LAN with a token (bridge README). In
+the app's "Voice keyboard" card, set the port and token and press "Ativar
+teclado". Then hold the mic in any text field.
+
+The `ime set` command is convenient for development; a normal user enables the
+keyboard under Settings → System → Languages & input → On-screen keyboard and
+switches with the keyboard button or the navigation-bar keyboard picker.
 
 ---
 
@@ -638,10 +671,15 @@ Notes:
 | **0 — Validate (zero code)** | Install Hex, set "Zenith Wireless Microphone" as Hex's microphone, and dictate in Portuguese. The pt-BR `-30s` model is converted and imported (§16); Whisper and stock v3 are the comparison points. | Text appears in a KDE app; quality is acceptable; latency measured. Stock v3's pt-PT drift is confirmed on short phrases. |
 | **0.5 — validate on the user's voice** | Record 10–15 phrases (numbers, names, accents, code terms) once. Transcribe the same WAVs with the chosen `-30s` model, Whisper and stock v3. Score errors by hand. | The `-30s` model stays the default unless it fails badly on this speaker; the run also provides the reference recordings for the bridge tests. |
 | **1 — Bridge + live test** | The bridge (TCP, resident Hex engine, live tail passes, final whole-clip pass) and the `live-test` client are implemented in `bridge/`. A "Test transcription" button in the app can follow. | `bun run live-test` prints PARTIAL frames while the WAV streams and a final RESULT that matches the reference; round trip < 2 s for a 10 s utterance without live, and the final is not delayed by more than one tail pass with live; the two #252 clips return full text; the main error paths are reachable. |
-| **2 — IME** | Implement `ZenithImeService`, capture, TCP client, `setComposingText` for PARTIAL, `commitText` for RESULT, cancel and state machine. | Works in WhatsApp, Chrome and Notes; partials show underlined and are replaced by the final; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
+| **2 — IME** | Implemented in `android/.../ime/`: `ZenithImeService`, `DictationClient`, `DictationProtocol`, the voice layout/declaration and the settings card. | **Code complete and unit-tested; on-device validation pending.** Works in WhatsApp, Chrome and Notes; partials show underlined and are replaced by the final; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
 | **3 — Polish** | Model/language picker, token pairing, undo (`deleteSurroundingText`), PC-target shortcut, better pause detection. | Each item independently verified. |
 
 Phase 0 is not optional. It answers the biggest unknown — does the model understand this user's Brazilian Portuguese through this microphone? — before any code exists. Phase 0.5 decides the model with evidence instead of a model card.
+
+The IME code has JVM tests for the frame codec and for the client against a fake
+bridge (`DictationProtocolTest`, `DictationClientTest`). What remains is the
+part a JVM cannot prove: real `AudioRecord` capture, the composing-text
+behaviour of each app, and concurrent capture with the streaming service.
 
 ---
 
@@ -655,6 +693,7 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 6. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
 7. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
 8. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt, but verify long holds.
+9. **On-device IME validation:** install the APK, enable "Zenith Voice", set the bridge port/token, and dictate into Notes, Chrome and WhatsApp. Items 5–8 are observed there; none of them can be proven by the JVM tests.
 
 ---
 
@@ -677,13 +716,15 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 | `bridge/test/wav.test.ts` | WAV container |
 | `bridge/test/live-session.test.ts` | Live scheduler, cancellation, audio cap |
 | `bridge/zenith-dictation.service` | systemd user unit (planned) |
-| `android/.../ime/ZenithImeService.kt` | InputMethodService, view, state machine, composing text/commit (planned) |
-| `android/.../ime/DictationClient.kt` | TCP connection, frame codec, writer queue, reply parsing (planned) |
-| `android/.../ime/DictationProtocol.kt` | Frame types and JSON models shared with the bridge tests (planned) |
-| `android/app/src/main/res/xml/method.xml` | IME declaration and subtypes (planned) |
-| `android/app/src/main/res/layout/ime_voice.xml` | Voice keyboard layout (planned) |
-| `android/app/src/main/AndroidManifest.xml` | Service + `BIND_INPUT_METHOD` (planned) |
-| `android/app/src/test/java/com/zenith/audio/ime/` | Frame codec and state-machine unit tests (planned) |
+| `android/.../ime/ZenithImeService.kt` | InputMethodService, view, state machine, composing text/commit |
+| `android/.../ime/DictationClient.kt` | TCP connection, writer queue, 100 ms aggregation, reply parsing |
+| `android/.../ime/DictationProtocol.kt` | Frame codec and JSON models shared with the bridge |
+| `android/.../mic/MicSettingsStore.kt` | Shared `zenith_prefs` microphone keys (service + IME) |
+| `android/app/src/main/res/xml/method.xml` | IME declaration and subtypes |
+| `android/app/src/main/res/layout/ime_voice.xml` | Voice keyboard layout |
+| `android/app/src/main/AndroidManifest.xml` | Service + `BIND_INPUT_METHOD` |
+| `android/app/src/test/java/com/zenith/audio/ime/DictationProtocolTest.kt` | Frame codec and JSON payloads |
+| `android/app/src/test/java/com/zenith/audio/ime/DictationClientTest.kt` | Client against a fake bridge (START, AUDIO, END, PARTIAL, RESULT, ERROR) |
 
 ---
 
@@ -692,9 +733,12 @@ Phase 0 is not optional. It answers the biggest unknown — does the model under
 - **Batch final, live preview.** The final always transcribes the whole utterance; live text is a series of tentative tail passes. This avoids chunk joins while giving text during speech. The final requires the local #252 patch, now validated in Hex; upstreaming is pending.
 - **The bridge protocol carries partials now.** `PARTIAL` (0x04) is implemented; the client replaces previews and commits only `RESULT`.
 - **TCP for dictation.** Reliability and ordering matter more than milliseconds when the payload is a sentence.
+- **Half-close after END is supported.** Node's default `allowHalfOpen: false` closes the bridge's write side as soon as the client's FIN arrives, which lost the RESULT; the bridge now keeps writing until it has replied, and treats a half-close without END as a cancel.
 - **Separate bridge process.** Isolates failures and keeps the C++ audio server untouched.
 - **Trigger decides destination.** No router, no synchronized selector.
-- **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; no second capture implementation.
+- **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; a `packetize = false` flag hands over raw PCM16 and skips ZAP controls instead of adding a second capture implementation.
+- **Dictation settings live in the app.** Port and token are edited in the main app's voice-keyboard card; the IME only opens it. Editable fields inside an IME window would need the IME to type into itself, and this IME deliberately has no QWERTY.
+- **Partials are composing text.** Every PARTIAL replaces the previous one with `setComposingText`; the RESULT replaces it with `commitText`. Cancel and errors clear the composing region so no provisional text is left behind.
 - **Whisper with a language hint for pt-BR.** It is the safe native fallback that handles Brazilian Portuguese and prevents the output language from silently changing.
 - **The `-30s` pt-BR fine-tune is the chosen model**, validated on read and spontaneous speech and imported into Hex (§16). The `-plus` checkpoint is not public; `tagarela-v2` is a 1024-token English lineage and was rejected.
 - **Do not log transcripts by default.** Voice text is sensitive.
