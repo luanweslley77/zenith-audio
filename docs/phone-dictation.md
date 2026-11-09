@@ -406,6 +406,8 @@ The PC address comes from the existing `server_ip` preference, filled by `Server
 
 Use classic Android Views for v1. Compose inside an IME needs a `ComposeView` plus a lifecycle owner and adds failure modes for no user benefit in a screen with three controls. The main activity already uses Compose; the IME can stay on Views until it grows.
 
+The mic button has both interaction paths: press-and-hold for touch, and a click toggle for TalkBack/switch access (first activation starts, the next stops). The status line and the button text are the accessibility labels; there are no icon-only controls.
+
 ### 5.3 Capture
 
 Reuse `MicAudioRecorder` with raw-frame mode (`packetize = false`), which is a
@@ -430,6 +432,11 @@ so the streaming service and the IME always apply the same source, device,
 gain and limiter. `start()` returns `false` when the device or permission is
 unavailable; the IME surfaces that and closes the connection instead of
 recording.
+
+Opening and releasing `AudioRecord` can take tens to hundreds of milliseconds,
+so the IME runs them on a single capture executor, never on the main thread.
+On release, the recorder stops first and only then is `END` sent, so the last
+10 ms frame is not lost.
 
 Refactor only if the class grows: extract `MicDsp` (high-pass, gain, limiter)
 and a `MicFrameSink` interface. Do not rewrite it for the MVP.
@@ -464,7 +471,7 @@ Idle ──press──▶ Connecting ──ok──▶ Recording ──release�
   └────error/cancel───┴──────────────────┴────────────────────┘
 ```
 
-- **Cancel** (button, back, screen off): stop capture, close the socket without `END`, return to `Idle`.
+- **Cancel** (button, hiding the keyboard with Back or an IME switch, screen off): stop capture, close the socket without `END`, return to `Idle`. Hiding the input view calls `onFinishInputView`; a temporarily hidden window calls `onWindowHidden`; both cancel. Relying only on `onFinishInput` would leave the microphone on when the keyboard is merely hidden.
 - **Timeout**: 120 s waiting for the result, then show an error and close.
 - **Permission missing**: open the main activity to request `RECORD_AUDIO` (same app, so a grant covers the IME too).
 - **PC unreachable**: show "PC indisponível" with the configured address and a shortcut to the settings; do not start recording.
@@ -621,6 +628,7 @@ PC-target dictation does not use the bridge:
 
 - The bridge binds to `127.0.0.1` by default. To reach it from the phone, bind to a LAN address **and** set `--token`; the bridge refuses a non-loopback host without one. The phone sends the same token in `START`.
 - Anyone with the token can make the PC transcribe audio (resource abuse), but cannot read files or run code.
+- The token is stored in the app's private `SharedPreferences` (plaintext, masked in the UI) and sent without TLS. Treat it as a LAN-scoped bearer secret; changing it means updating both the bridge and the app.
 - No TLS. Do not expose the port through the router; if remote use is needed, use a VPN (WireGuard) — the same assumption ZAP already makes.
 - Transcripts are not logged by default. Hex's own History is a separate feature; the bridge does not write text to disk.
 - Audio and text stay on the LAN and on the PC. No cloud provider is involved unless the user deliberately configures one in Hex (not part of this design).
@@ -719,7 +727,9 @@ behaviour of each app, and concurrent capture with the streaming service.
 | `android/.../ime/ZenithImeService.kt` | InputMethodService, view, state machine, composing text/commit |
 | `android/.../ime/DictationClient.kt` | TCP connection, writer queue, 100 ms aggregation, reply parsing |
 | `android/.../ime/DictationProtocol.kt` | Frame codec and JSON models shared with the bridge |
+| `android/.../ime/DictationPrefs.kt` | `zenith_prefs` keys shared by the app and the IME |
 | `android/.../mic/MicSettingsStore.kt` | Shared `zenith_prefs` microphone keys (service + IME) |
+| `android/app/src/main/res/values/colors.xml` | Voice keyboard palette |
 | `android/app/src/main/res/xml/method.xml` | IME declaration and subtypes |
 | `android/app/src/main/res/layout/ime_voice.xml` | Voice keyboard layout |
 | `android/app/src/main/AndroidManifest.xml` | Service + `BIND_INPUT_METHOD` |
@@ -739,6 +749,8 @@ behaviour of each app, and concurrent capture with the streaming service.
 - **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; a `packetize = false` flag hands over raw PCM16 and skips ZAP controls instead of adding a second capture implementation.
 - **Dictation settings live in the app.** Port and token are edited in the main app's voice-keyboard card; the IME only opens it. Editable fields inside an IME window would need the IME to type into itself, and this IME deliberately has no QWERTY.
 - **Partials are composing text.** Every PARTIAL replaces the previous one with `setComposingText`; the RESULT replaces it with `commitText`. Cancel and errors clear the composing region so no provisional text is left behind.
+- **Hiding the IME ends the session.** `onFinishInput` alone is not enough: Back and keyboard switches hide the input view without finishing input. `onFinishInputView` and `onWindowHidden` also cancel, so the microphone is never left running without a visible keyboard.
+- **Audio device work stays off the main thread.** `AudioRecord` open/close runs on a single capture executor; on release the recorder stops before END is sent. A 500 ms join on the UI thread is an ANR-shaped stall, not an acceptable v1 trade-off.
 - **Whisper with a language hint for pt-BR.** It is the safe native fallback that handles Brazilian Portuguese and prevents the output language from silently changing.
 - **The `-30s` pt-BR fine-tune is the chosen model**, validated on read and spontaneous speech and imported into Hex (§16). The `-plus` checkpoint is not public; `tagarela-v2` is a 1024-token English lineage and was rejected.
 - **Do not log transcripts by default.** Voice text is sensitive.
