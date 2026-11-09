@@ -402,7 +402,7 @@ A compact voice keyboard, **not** a full QWERTY:
 - a keyboard-switch button (`switchToNextInputMethod`) so the user can return to Gboard;
 - a settings button that opens the main app.
 
-The PC address comes from the existing `server_ip` preference, filled by `ServerDiscovery`; the bridge port defaults to `59102` and is stored next to it. The main app has a "Voice keyboard" card that edits `dictation_port` and `dictation_token` and opens the system IME settings. The token is edited in the app, not inside the IME: an editable field inside an IME window would route input through the IME itself, which has no QWERTY keyboard by design.
+The PC address comes from the existing `server_ip` preference, filled by `ServerDiscovery`; the bridge port defaults to `59102` and is stored next to it. The main app has a "Voice keyboard" card that edits `dictation_port` and `dictation_token` and opens the system IME settings. The token is masked with a show/hide toggle and is edited in the app, not inside the IME: an editable field inside an IME window would route input through the IME itself, which has no QWERTY keyboard by design.
 
 Use classic Android Views for v1. Compose inside an IME needs a `ComposeView` plus a lifecycle owner and adds failure modes for no user benefit in a screen with three controls. The main activity already uses Compose; the IME can stay on Views until it grows.
 
@@ -471,7 +471,7 @@ Idle ──press──▶ Connecting ──ok──▶ Recording ──release�
   └────error/cancel───┴──────────────────┴────────────────────┘
 ```
 
-- **Cancel** (button, hiding the keyboard with Back or an IME switch, screen off): stop capture, close the socket without `END`, return to `Idle`. Hiding the input view calls `onFinishInputView`; a temporarily hidden window calls `onWindowHidden`; both cancel. Relying only on `onFinishInput` would leave the microphone on when the keyboard is merely hidden.
+- **Cancel** (button, hiding the keyboard with Back or an IME switch, screen off): stop capture, close the socket without `END`, return to `Idle`. Hiding the input view calls `onFinishInputView`; a temporarily hidden window calls `onWindowHidden`; both cancel **while capturing** (CONNECTING/RECORDING). A session already in WAITING is left to finish, so a transient hide does not discard an utterance that is already being transcribed. Relying only on `onFinishInput` would leave the microphone on when the keyboard is merely hidden.
 - **Timeout**: 120 s waiting for the result, then show an error and close.
 - **Permission missing**: open the main activity to request `RECORD_AUDIO` (same app, so a grant covers the IME too).
 - **PC unreachable**: show "PC indisponível" with the configured address and a shortcut to the settings; do not start recording.
@@ -749,7 +749,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 - **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; a `packetize = false` flag hands over raw PCM16 and skips ZAP controls instead of adding a second capture implementation.
 - **Dictation settings live in the app.** Port and token are edited in the main app's voice-keyboard card; the IME only opens it. Editable fields inside an IME window would need the IME to type into itself, and this IME deliberately has no QWERTY.
 - **Partials are composing text.** Every PARTIAL replaces the previous one with `setComposingText`; the RESULT replaces it with `commitText`. Cancel and errors clear the composing region so no provisional text is left behind.
-- **Hiding the IME ends the session.** `onFinishInput` alone is not enough: Back and keyboard switches hide the input view without finishing input. `onFinishInputView` and `onWindowHidden` also cancel, so the microphone is never left running without a visible keyboard.
+- **Hiding the IME ends the session.** `onFinishInput` alone is not enough: Back and keyboard switches hide the input view without finishing input. `onFinishInputView` and `onWindowHidden` also cancel while the microphone is live, so it is never left running without a visible keyboard; WAITING is exempt so a transient hide does not throw away an in-flight transcript.
 - **Audio device work stays off the main thread.** `AudioRecord` open/close runs on a single capture executor; on release the recorder stops before END is sent. A 500 ms join on the UI thread is an ANR-shaped stall, not an acceptable v1 trade-off.
 - **Whisper with a language hint for pt-BR.** It is the safe native fallback that handles Brazilian Portuguese and prevents the output language from silently changing.
 - **The `-30s` pt-BR fine-tune is the chosen model**, validated on read and spontaneous speech and imported into Hex (§16). The `-plus` checkpoint is not public; `tagarela-v2` is a 1024-token English lineage and was rejected.
