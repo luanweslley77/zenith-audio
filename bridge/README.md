@@ -158,6 +158,9 @@ model or a microphone.
 
 ## Notes
 
+- Why the live layer is here and not in Hex:
+  [`../docs/adr/0001-live-text-in-the-bridge.md`](../docs/adr/0001-live-text-in-the-bridge.md).
+
 - The bridge serializes inference; a live pass in flight is allowed to finish
   before the final pass starts.
 - A failed preview is ignored; the final transcription still runs.

@@ -555,6 +555,8 @@ The implementation lives in `bridge/` (Bun + `@kitlangton/hex`):
 
 Validated on a 14.2 s FLEURS clip: 17 partials, final text exactly the reference. `bun test` covers the frame codec, WAV container, live scheduler, cancellation and the audio cap; `bun run typecheck` is clean.
 
+Decision record: [ADR 0001](adr/0001-live-text-in-the-bridge.md) explains why this live layer is outside Hex, its costs, and the criteria for moving it into Hex or replacing it with a native streaming model.
+
 ---
 
 ## 7. Lifecycle of one dictation
