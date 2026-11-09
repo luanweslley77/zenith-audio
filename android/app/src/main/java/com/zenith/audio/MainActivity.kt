@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -1154,6 +1155,7 @@ fun ZenithAudioScreen(
         // ⌨️ VOICE KEYBOARD (DICTATION) — bridge port and token
         var dictationPortText by remember { mutableStateOf(initialDictationPort.toString()) }
         var dictationTokenText by remember { mutableStateOf(initialDictationToken) }
+        var dictationTokenVisible by remember { mutableStateOf(false) }
         var dictationSaved by remember { mutableStateOf(false) }
 
         Card(
@@ -1200,7 +1202,7 @@ fun ZenithAudioScreen(
                         },
                         label = { Text("Porta", fontSize = 11.sp) },
                         singleLine = true,
-                        isError = dictationPortText.isNotEmpty() && !dictationPortValid,
+                        isError = !dictationPortValid,
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -1212,7 +1214,27 @@ fun ZenithAudioScreen(
                         },
                         label = { Text("Token (LAN)", fontSize = 11.sp) },
                         singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (dictationTokenVisible) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { dictationTokenVisible = !dictationTokenVisible }) {
+                                Icon(
+                                    imageVector = if (dictationTokenVisible) {
+                                        Icons.Default.VisibilityOff
+                                    } else {
+                                        Icons.Default.Visibility
+                                    },
+                                    contentDescription = if (dictationTokenVisible) {
+                                        "Ocultar token"
+                                    } else {
+                                        "Mostrar token"
+                                    }
+                                )
+                            }
+                        },
                         modifier = Modifier.weight(1.4f)
                     )
                 }

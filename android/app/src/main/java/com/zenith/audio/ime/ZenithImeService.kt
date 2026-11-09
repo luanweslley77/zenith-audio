@@ -57,6 +57,10 @@ class ZenithImeService : InputMethodService() {
         Thread(runnable, "ZenithImeCapture").apply { isDaemon = true }
     }
 
+    @Volatile
+    private var destroyed = false
+
+    @Volatile
     private var client: DictationClient? = null
     private var recorder: MicAudioRecorder? = null
     private var pressStartedAt = 0L
@@ -208,18 +212,19 @@ class ZenithImeService : InputMethodService() {
      * keep running with no visible UI.
      */
     override fun onFinishInputView(finishInput: Boolean) {
-        cancelDictation(clearPreview = true, notify = false)
+        cancelIfCapturing()
         super.onFinishInputView(finishInput)
     }
 
     override fun onWindowHidden() {
-        cancelDictation(clearPreview = true, notify = false)
+        cancelIfCapturing()
         super.onWindowHidden()
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onDestroy() {
+        destroyed = true
         cancelDictation(clearPreview = true, notify = false)
         captureExecutor.shutdown()
         runCatching { unregisterReceiver(screenReceiver) }
@@ -263,8 +268,12 @@ class ZenithImeService : InputMethodService() {
     }
 
     private fun startCapture() {
+        if (destroyed) return
         val session = client ?: return
         captureExecutor.execute {
+            // The session may have been cancelled while this task was queued.
+            if (destroyed || client !== session) return@execute
+
             val capture = MicAudioRecorder(
                 context = this,
                 sendAudioPacket = { frame -> session.enqueue(frame) },
@@ -273,6 +282,13 @@ class ZenithImeService : InputMethodService() {
             )
             capture.applySettings(MicSettingsStore.read(this), restartIfRecording = false)
             val started = capture.start()
+
+            // Cancelled while AudioRecord was opening: close it right here,
+            // on the capture thread, without opening the microphone again.
+            if (destroyed || client !== session) {
+                capture.stop()
+                return@execute
+            }
 
             mainHandler.post {
                 if (state != State.CONNECTING || client !== session) {
@@ -349,8 +365,15 @@ class ZenithImeService : InputMethodService() {
         try {
             captureExecutor.execute { capture.stop() }
         } catch (_: RejectedExecutionException) {
-            // The service is being destroyed; the device must still be released.
-            capture.stop()
+            // The service is being destroyed; release the device off the main
+            // thread instead of blocking teardown.
+            Thread({ capture.stop() }, "ZenithImeCaptureRelease").start()
+        }
+    }
+
+    private fun cancelIfCapturing() {
+        if (state == State.CONNECTING || state == State.RECORDING) {
+            cancelDictation(clearPreview = true, notify = false)
         }
     }
 
