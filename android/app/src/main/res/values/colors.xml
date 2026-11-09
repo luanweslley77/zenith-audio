@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Voice keyboard (IME) palette; the IME is intentionally dark so it
+         does not flash white over dark apps. -->
+    <color name="ime_background">#FF121212</color>
+    <color name="ime_status_text">#FFAAAAAA</color>
+    <color name="ime_mic">#FF2E7D32</color>
+    <color name="ime_cancel">#FFC62828</color>
+    <color name="ime_secondary">#FF333333</color>
+    <color name="ime_secondary_text">#FFDDDDDD</color>
+</resources>

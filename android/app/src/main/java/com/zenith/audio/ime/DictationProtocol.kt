@@ -164,8 +164,9 @@ class DictationFrameParser {
                 .order(ByteOrder.BIG_ENDIAN)
             val type = header.get().toInt() and 0xFF
             val size = header.int
-            require(size <= DictationProtocol.MAX_FRAME_BYTES) { "frame too large: $size bytes" }
-            if (size < 0) throw IllegalArgumentException("negative frame length")
+            if (size < 0 || size > DictationProtocol.MAX_FRAME_BYTES) {
+                throw IllegalArgumentException("invalid frame length: $size")
+            }
             if (length - cursor < DictationProtocol.HEADER_BYTES + size) break
             val start = cursor + DictationProtocol.HEADER_BYTES
             frames.add(

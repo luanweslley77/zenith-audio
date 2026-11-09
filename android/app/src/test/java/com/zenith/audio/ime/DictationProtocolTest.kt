@@ -92,6 +92,18 @@ class DictationProtocolTest {
     }
 
     @Test
+    fun `parser rejects a negative frame length`() {
+        val header = ByteBuffer.allocate(DictationProtocol.HEADER_BYTES)
+            .put(0x01)
+            .putInt(Int.MIN_VALUE)
+            .array()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            DictationFrameParser().push(header)
+        }
+    }
+
+    @Test
     fun `partial carries the provisional text`() {
         val json = JSONObject()
             .put("version", 1)

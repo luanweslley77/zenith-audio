@@ -33,11 +33,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.zenith.audio.ime.DictationProtocol
+import com.zenith.audio.ime.DictationPrefs
 import com.zenith.audio.mic.MicInputDevice
 import com.zenith.audio.mic.MicSettings
 import com.zenith.audio.mic.MicSourceMode
@@ -217,8 +218,8 @@ class MainActivity : ComponentActivity() {
 
         val prefs = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
         val initialIp = prefs.getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
-        val initialDictationPort = prefs.getInt("dictation_port", DictationProtocol.DEFAULT_PORT)
-        val initialDictationToken = prefs.getString("dictation_token", "").orEmpty()
+        val initialDictationPort = DictationPrefs.port(this)
+        val initialDictationToken = DictationPrefs.token(this)
         pcAudioEnabledState.value = prefs.getBoolean("pc_audio_enabled", true)
         phoneOnlyState.value = prefs.getBoolean("phone_only", false)
 
@@ -332,10 +333,7 @@ class MainActivity : ComponentActivity() {
                             audioService?.setPhoneOnly(enabled)
                         },
                         onSaveDictationSettings = { port, token ->
-                            prefs.edit()
-                                .putInt("dictation_port", port)
-                                .putString("dictation_token", token)
-                                .apply()
+                            DictationPrefs.save(this, port, token)
                         },
                         onOpenImeSettings = {
                             runCatching {
@@ -1189,6 +1187,10 @@ fun ZenithAudioScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
+                val dictationPortValue = dictationPortText.toIntOrNull()
+                val dictationPortValid = dictationPortValue != null &&
+                    dictationPortValue in 1..65535
+
                 Row(modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = dictationPortText,
@@ -1198,6 +1200,7 @@ fun ZenithAudioScreen(
                         },
                         label = { Text("Porta", fontSize = 11.sp) },
                         singleLine = true,
+                        isError = dictationPortText.isNotEmpty() && !dictationPortValid,
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -1209,7 +1212,16 @@ fun ZenithAudioScreen(
                         },
                         label = { Text("Token (LAN)", fontSize = 11.sp) },
                         singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.weight(1.4f)
+                    )
+                }
+
+                if (!dictationPortValid) {
+                    Text(
+                        text = "Porta inválida: use um número entre 1 e 65535.",
+                        fontSize = 10.sp,
+                        color = Color(0xFFFF5252)
                     )
                 }
 
@@ -1218,8 +1230,8 @@ fun ZenithAudioScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Button(
                         onClick = {
-                            val port = dictationPortText.toIntOrNull()
-                            if (port != null && port in 1..65535) {
+                            val port = dictationPortValue
+                            if (port != null && dictationPortValid) {
                                 onSaveDictationSettings(port, dictationTokenText.trim())
                                 dictationSaved = true
                             }

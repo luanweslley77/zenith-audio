@@ -2,7 +2,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="#FF121212"
+    android:background="@color/ime_background"
     android:orientation="vertical"
     android:paddingStart="10dp"
     android:paddingTop="8dp"
@@ -16,7 +16,7 @@
         android:ellipsize="end"
         android:singleLine="true"
         android:text="@string/ime_status_no_server"
-        android:textColor="#FFAAAAAA"
+        android:textColor="@color/ime_status_text"
         android:textSize="12sp" />
 
     <LinearLayout
@@ -32,10 +32,10 @@
             android:layout_width="0dp"
             android:layout_height="56dp"
             android:layout_weight="1"
-            android:backgroundTint="#FF2E7D32"
+            android:backgroundTint="@color/ime_mic"
             android:text="@string/ime_hold_to_talk"
             android:textAllCaps="false"
-            android:textColor="#FFFFFFFF"
+            android:textColor="@android:color/white"
             android:textSize="14sp" />
 
         <Button
@@ -43,10 +43,10 @@
             android:layout_width="wrap_content"
             android:layout_height="56dp"
             android:layout_marginStart="6dp"
-            android:backgroundTint="#FFC62828"
+            android:backgroundTint="@color/ime_cancel"
             android:text="@string/ime_cancel"
             android:textAllCaps="false"
-            android:textColor="#FFFFFFFF"
+            android:textColor="@android:color/white"
             android:textSize="12sp"
             android:visibility="gone" />
 
@@ -55,11 +55,11 @@
             android:layout_width="wrap_content"
             android:layout_height="56dp"
             android:layout_marginStart="6dp"
-            android:backgroundTint="#FF333333"
+            android:backgroundTint="@color/ime_secondary"
             android:contentDescription="@string/ime_switch_keyboard"
             android:text="@string/ime_switch_keyboard"
             android:textAllCaps="false"
-            android:textColor="#FFDDDDDD"
+            android:textColor="@color/ime_secondary_text"
             android:textSize="12sp" />
 
         <Button
@@ -67,11 +67,11 @@
             android:layout_width="wrap_content"
             android:layout_height="56dp"
             android:layout_marginStart="6dp"
-            android:backgroundTint="#FF333333"
+            android:backgroundTint="@color/ime_secondary"
             android:contentDescription="@string/ime_settings_description"
             android:minWidth="48dp"
             android:text="@string/ime_settings"
-            android:textColor="#FFDDDDDD"
+            android:textColor="@color/ime_secondary_text"
             android:textSize="18sp" />
     </LinearLayout>
 

@@ -18,8 +18,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * never stall capture. The writer aggregates 10 ms recorder frames into
  * 100 ms AUDIO frames, as the protocol specifies.
  *
- * Callbacks are invoked on the I/O thread; the service marshals them to the
- * main thread.
+ * Callbacks are normally invoked on the I/O thread; `network-slow` is
+ * reported from the recorder thread that filled the queue. The service
+ * marshals every callback to the main thread.
  */
 class DictationClient(
     private val host: String,
@@ -45,12 +46,13 @@ class DictationClient(
 
     @Volatile
     private var socket: Socket? = null
+
+    @Volatile
     private var writerThread: Thread? = null
-    private var ioThread: Thread? = null
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
-        ioThread = Thread({ runSession() }, "ZenithDictationIo").apply { start() }
+        Thread({ runSession() }, "ZenithDictationIo").apply { start() }
     }
 
     /**
@@ -117,6 +119,7 @@ class DictationClient(
                 while (true) {
                     val frame = queue.poll(POLL_MS, TimeUnit.MILLISECONDS)
                     if (frame == null) {
+                        if (cancelled.get()) return@Thread
                         if (finishing.get() && queue.isEmpty()) break
                         continue
                     }
@@ -156,7 +159,13 @@ class DictationClient(
         while (true) {
             val read = input.read(buffer)
             if (read < 0) break
-            for (frame in parser.push(buffer, 0, read)) {
+            val frames = try {
+                parser.push(buffer, 0, read)
+            } catch (e: IllegalArgumentException) {
+                fail("bad-frame", e.message ?: "malformed frame from the bridge")
+                return
+            }
+            for (frame in frames) {
                 when (frame.type) {
                     DictationProtocol.FrameType.PARTIAL -> {
                         listener.onPartial(DictationProtocol.parsePartial(frame.payload).text)
@@ -190,6 +199,7 @@ class DictationClient(
         if (!reported.compareAndSet(false, true)) return
         running.set(false)
         closeSocket()
+        writerThread?.interrupt()
         if (cancelled.get()) return
         listener.onError(code, message)
     }

@@ -26,6 +26,8 @@ import com.zenith.audio.MainActivity
 import com.zenith.audio.R
 import com.zenith.audio.mic.MicAudioRecorder
 import com.zenith.audio.mic.MicSettingsStore
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * Voice keyboard. Hold the mic, speak, release: the PC transcribes and the
@@ -45,6 +47,15 @@ class ZenithImeService : InputMethodService() {
     private var cancelButton: Button? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * AudioRecord open/close is blocking (tens to hundreds of ms). Keeping it
+     * off the main thread avoids freezing the IME window during start/release.
+     * A single thread keeps start/stop ordered.
+     */
+    private val captureExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "ZenithImeCapture").apply { isDaemon = true }
+    }
 
     private var client: DictationClient? = null
     private var recorder: MicAudioRecorder? = null
@@ -130,7 +141,6 @@ class ZenithImeService : InputMethodService() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    button.performClick()
                     releaseDictation()
                     true
                 }
@@ -144,6 +154,20 @@ class ZenithImeService : InputMethodService() {
 
         cancelButton?.setOnClickListener {
             cancelDictation(clearPreview = true, notify = true)
+        }
+        // TalkBack and switch-access activate a view with performClick(), not
+        // with raw touch events. The click path is a toggle: first activation
+        // starts, the next stops. Touch users keep press-and-hold.
+        micButton?.setOnClickListener {
+            when (state) {
+                State.IDLE -> {
+                    pressStartedAt = SystemClock.elapsedRealtime()
+                    startDictation()
+                }
+                State.RECORDING -> finishRecording()
+                State.CONNECTING -> cancelDictation(clearPreview = true, notify = false)
+                State.WAITING -> Unit
+            }
         }
         view.findViewById<Button>(R.id.ime_switch).setOnClickListener {
             switchKeyboard()
@@ -178,10 +202,26 @@ class ZenithImeService : InputMethodService() {
         super.onFinishInput()
     }
 
+    /**
+     * Hiding the keyboard (Back, switching IMEs, the app hiding it) is not a
+     * finishInput event. Without this the microphone and the TCP session would
+     * keep running with no visible UI.
+     */
+    override fun onFinishInputView(finishInput: Boolean) {
+        cancelDictation(clearPreview = true, notify = false)
+        super.onFinishInputView(finishInput)
+    }
+
+    override fun onWindowHidden() {
+        cancelDictation(clearPreview = true, notify = false)
+        super.onWindowHidden()
+    }
+
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onDestroy() {
         cancelDictation(clearPreview = true, notify = false)
+        captureExecutor.shutdown()
         runCatching { unregisterReceiver(screenReceiver) }
         super.onDestroy()
     }
@@ -189,8 +229,7 @@ class ZenithImeService : InputMethodService() {
     private fun startDictation() {
         if (state != State.IDLE) return
 
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val host = prefs.getString(KEY_SERVER_IP, "")?.trim().orEmpty()
+        val host = DictationPrefs.host(this)
         if (host.isEmpty()) {
             setStatus(getString(R.string.ime_status_no_server))
             toast(getString(R.string.ime_toast_no_server))
@@ -206,9 +245,8 @@ class ZenithImeService : InputMethodService() {
             return
         }
 
-        val port = prefs.getInt(KEY_PORT, DictationProtocol.DEFAULT_PORT)
-            .takeIf { it in 1..65535 } ?: DictationProtocol.DEFAULT_PORT
-        val token = prefs.getString(KEY_TOKEN, "").orEmpty()
+        val port = DictationPrefs.port(this)
+        val token = DictationPrefs.token(this)
 
         state = State.CONNECTING
         setStatus(getString(R.string.ime_status_connecting, host, port))
@@ -226,26 +264,35 @@ class ZenithImeService : InputMethodService() {
 
     private fun startCapture() {
         val session = client ?: return
-        val capture = MicAudioRecorder(
-            context = this,
-            sendAudioPacket = { frame -> session.enqueue(frame) },
-            sendControlPacket = {},
-            packetize = false
-        )
-        capture.applySettings(MicSettingsStore.read(this), restartIfRecording = false)
+        captureExecutor.execute {
+            val capture = MicAudioRecorder(
+                context = this,
+                sendAudioPacket = { frame -> session.enqueue(frame) },
+                sendControlPacket = {},
+                packetize = false
+            )
+            capture.applySettings(MicSettingsStore.read(this), restartIfRecording = false)
+            val started = capture.start()
 
-        if (!capture.start()) {
-            capture.stop()
-            failSession("microphone")
-            return
+            mainHandler.post {
+                if (state != State.CONNECTING || client !== session) {
+                    // The user released or cancelled while the device opened.
+                    stopCapture(capture)
+                    return@post
+                }
+                if (!started) {
+                    stopCapture(capture)
+                    failSession("microphone")
+                    return@post
+                }
+                recorder = capture
+                state = State.RECORDING
+                setStatus(getString(R.string.ime_status_listening))
+                updateSessionUi()
+                mainHandler.removeCallbacks(maxDurationRunnable)
+                mainHandler.postDelayed(maxDurationRunnable, MAX_DICTATION_MS)
+            }
         }
-
-        recorder = capture
-        state = State.RECORDING
-        setStatus(getString(R.string.ime_status_listening))
-        updateSessionUi()
-        mainHandler.removeCallbacks(maxDurationRunnable)
-        mainHandler.postDelayed(maxDurationRunnable, MAX_DICTATION_MS)
     }
 
     private fun releaseDictation() {
@@ -267,12 +314,47 @@ class ZenithImeService : InputMethodService() {
     private fun finishRecording() {
         if (state != State.RECORDING) return
         mainHandler.removeCallbacks(maxDurationRunnable)
-        recorder?.stop()
+        val capture = recorder
         recorder = null
+        val session = client
         state = State.WAITING
         setStatus(getString(R.string.ime_status_transcribing))
         updateSessionUi()
-        client?.finish()
+
+        if (capture == null) {
+            session?.finish()
+            scheduleResultTimeout()
+            return
+        }
+        // Stop capture before END so the last 10 ms frame is not lost. The
+        // stop runs off the main thread; only then is END sent.
+        captureExecutor.execute {
+            capture.stop()
+            mainHandler.post {
+                if (state == State.WAITING && client === session) {
+                    session?.finish()
+                    scheduleResultTimeout()
+                }
+            }
+        }
+    }
+
+    private fun stopRecorder() {
+        val capture = recorder ?: return
+        recorder = null
+        stopCapture(capture)
+    }
+
+    private fun stopCapture(capture: MicAudioRecorder) {
+        try {
+            captureExecutor.execute { capture.stop() }
+        } catch (_: RejectedExecutionException) {
+            // The service is being destroyed; the device must still be released.
+            capture.stop()
+        }
+    }
+
+    private fun scheduleResultTimeout() {
         mainHandler.removeCallbacks(resultTimeoutRunnable)
         mainHandler.postDelayed(resultTimeoutRunnable, RESULT_TIMEOUT_MS)
     }
@@ -284,8 +366,7 @@ class ZenithImeService : InputMethodService() {
         }
         mainHandler.removeCallbacks(maxDurationRunnable)
         mainHandler.removeCallbacks(resultTimeoutRunnable)
-        recorder?.stop()
-        recorder = null
+        stopRecorder()
         client?.cancel()
         client = null
         state = State.IDLE
@@ -304,8 +385,7 @@ class ZenithImeService : InputMethodService() {
     private fun endSession(clearPreview: Boolean) {
         mainHandler.removeCallbacks(maxDurationRunnable)
         mainHandler.removeCallbacks(resultTimeoutRunnable)
-        recorder?.stop()
-        recorder = null
+        stopRecorder()
         client?.cancel()
         client = null
         state = State.IDLE
@@ -339,9 +419,8 @@ class ZenithImeService : InputMethodService() {
     private fun renderIdle() {
         state = State.IDLE
         updateSessionUi()
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val host = prefs.getString(KEY_SERVER_IP, "")?.trim().orEmpty()
-        val port = prefs.getInt(KEY_PORT, DictationProtocol.DEFAULT_PORT)
+        val host = DictationPrefs.host(this)
+        val port = DictationPrefs.port(this)
         setStatus(
             if (host.isEmpty()) getString(R.string.ime_status_no_server)
             else getString(R.string.ime_status_idle, host, port)
@@ -401,10 +480,6 @@ class ZenithImeService : InputMethodService() {
 
     private companion object {
         const val TAG = "ZenithImeService"
-        const val PREFS = "zenith_prefs"
-        const val KEY_SERVER_IP = "server_ip"
-        const val KEY_PORT = "dictation_port"
-        const val KEY_TOKEN = "dictation_token"
         const val MIN_HOLD_MS = 300L
         const val MAX_DICTATION_MS = 120_000L
         const val RESULT_TIMEOUT_MS = 120_000L
