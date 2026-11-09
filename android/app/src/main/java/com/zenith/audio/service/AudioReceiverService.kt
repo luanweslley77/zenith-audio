@@ -17,7 +17,7 @@ import androidx.core.app.NotificationCompat
 import com.zenith.audio.MainActivity
 import com.zenith.audio.mic.MicInputDevice
 import com.zenith.audio.mic.MicSettings
-import com.zenith.audio.mic.MicSourceMode
+import com.zenith.audio.mic.MicSettingsStore
 import com.zenith.audio.model.ConnectionState
 import com.zenith.audio.model.StreamMetrics
 import com.zenith.audio.network.UdpAudioReceiver
@@ -210,7 +210,7 @@ class AudioReceiverService : Service() {
     fun getMicInputDevices(): List<MicInputDevice> = micRecorder?.getInputDevices() ?: emptyList()
 
     fun applyMicSettings(settings: MicSettings) {
-        persistMicSettings(settings)
+        MicSettingsStore.write(this, settings)
         micRecorder?.applySettings(settings)
         receiver?.setMicNoiseSuppression(settings.noiseSuppressionPercent)
         Log.i(TAG, "Mic settings: source=${settings.sourceMode} input=${settings.inputDeviceId} " +
@@ -218,29 +218,7 @@ class AudioReceiverService : Service() {
                 "ns=${settings.noiseSuppressionPercent}%")
     }
 
-    private fun persistMicSettings(settings: MicSettings) {
-        getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE).edit()
-            .putString("mic_source_mode", settings.sourceMode.name)
-            .putInt("mic_input_device_id", settings.inputDeviceId)
-            .putString("mic_input_device_address", settings.inputDeviceAddress)
-            .putFloat("mic_gain_db", settings.gainDb)
-            .putInt("mic_ns_percent", settings.noiseSuppressionPercent)
-            .apply()
-    }
-
-    private fun readMicSettings(): MicSettings {
-        val prefs = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
-        return MicSettings(
-            sourceMode = MicSourceMode.fromStored(prefs.getString("mic_source_mode", null)),
-            inputDeviceId = prefs.getInt("mic_input_device_id", MicSettings.DEFAULT_INPUT_DEVICE),
-            gainDb = prefs.getFloat("mic_gain_db", MicSettings.DEFAULT_GAIN_DB),
-            noiseSuppressionPercent = prefs.getInt(
-                "mic_ns_percent",
-                MicSettings.DEFAULT_NOISE_SUPPRESSION_PERCENT
-            ),
-            inputDeviceAddress = prefs.getString("mic_input_device_address", "") ?: ""
-        )
-    }
+    private fun readMicSettings(): MicSettings = MicSettingsStore.read(this)
 
     private fun acquireWifiLock() {
         if (wifiLock?.isHeld == true) return

@@ -1,3 +1,39 @@
 <resources>
     <string name="app_name">Zenith Audio</string>
+
+    <!-- Voice keyboard (IME) -->
+    <string name="ime_name">Zenith Voice</string>
+    <string name="ime_subtype_ptbr">Português (Brasil)</string>
+    <string name="ime_hold_to_talk">Segure para falar</string>
+    <string name="ime_release_to_transcribe">Solte para transcrever</string>
+    <string name="ime_connecting">Conectando…</string>
+    <string name="ime_transcribing_short">Transcrevendo…</string>
+    <string name="ime_cancel">Cancelar</string>
+    <string name="ime_switch_keyboard">Teclado</string>
+    <string name="ime_settings">⚙</string>
+    <string name="ime_settings_description">Ajustes do Zenith</string>
+
+    <string name="ime_status_idle">%1$s:%2$d · segure o microfone e fale</string>
+    <string name="ime_status_no_server">Abra o app Zenith e conecte ao PC uma vez</string>
+    <string name="ime_status_no_permission">Permita o microfone no app Zenith</string>
+    <string name="ime_status_connecting">Conectando a %1$s:%2$d…</string>
+    <string name="ime_status_listening">Ouvindo… solte para transcrever</string>
+    <string name="ime_status_transcribing">Transcrevendo no PC…</string>
+    <string name="ime_status_too_short">Segure e fale</string>
+
+    <string name="ime_toast_no_server">Configure o PC no app Zenith Audio</string>
+    <string name="ime_toast_no_permission">Conceda a permissão de microfone ao Zenith Audio</string>
+    <string name="ime_toast_cancelled">Ditado cancelado</string>
+    <string name="ime_toast_no_field">Campo de texto indisponível — texto descartado</string>
+
+    <string name="ime_error_connection">PC indisponível — verifique a rede e o bridge</string>
+    <string name="ime_error_network_slow">Rede lenta: ditado cancelado</string>
+    <string name="ime_error_timeout">O PC não respondeu a tempo</string>
+    <string name="ime_error_model_busy">O PC está ocupado com outro ditado</string>
+    <string name="ime_error_model_unavailable">Modelo de voz indisponível no PC</string>
+    <string name="ime_error_audio_too_large">Áudio longo demais</string>
+    <string name="ime_error_bad_request">O PC recusou a configuração (token?)</string>
+    <string name="ime_error_unsupported_format">Formato de áudio não suportado</string>
+    <string name="ime_error_microphone">Microfone indisponível</string>
+    <string name="ime_error_generic">Falha na transcrição</string>
 </resources>

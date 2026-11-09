@@ -1,6 +1,7 @@
 package com.zenith.audio.mic
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
@@ -73,7 +74,13 @@ data class MicInputDevice(
 class MicAudioRecorder(
     private val context: Context,
     private val sendAudioPacket: (ByteArray) -> Unit,
-    private val sendControlPacket: (ByteArray) -> Unit
+    private val sendControlPacket: (ByteArray) -> Unit,
+    /**
+     * When false, [sendAudioPacket] receives the raw PCM16 frame instead of a
+     * ZAP packet, and no ZAP control packets are sent. The dictation IME uses
+     * this: its transport is TCP and ZAP's framing/controls do not apply.
+     */
+    private val packetize: Boolean = true
 ) {
     companion object {
         private const val TAG = "MicAudioRecorder"
@@ -120,7 +127,7 @@ class MicAudioRecorder(
         _settings.value = sanitized
         gainDb = sanitized.gainDb
 
-        if (previous.noiseSuppressionPercent != sanitized.noiseSuppressionPercent) {
+        if (packetize && previous.noiseSuppressionPercent != sanitized.noiseSuppressionPercent) {
             sendNoiseSuppression(sanitized.noiseSuppressionPercent)
         }
 
@@ -222,8 +229,10 @@ class MicAudioRecorder(
             _activeSource.value = sourceLabel(usedSource)
 
             // Send mic state ON and the current denoiser strength.
-            sendControlPacket(ZapProtocol.buildMicStatePacket(true))
-            sendNoiseSuppression(_settings.value.noiseSuppressionPercent)
+            if (packetize) {
+                sendControlPacket(ZapProtocol.buildMicStatePacket(true))
+                sendNoiseSuppression(_settings.value.noiseSuppressionPercent)
+            }
 
             recordThread = Thread({ recordLoop() }, "ZenithMicRecordThread").apply {
                 priority = Thread.MAX_PRIORITY
@@ -249,7 +258,7 @@ class MicAudioRecorder(
         _activeSource.value = ""
 
         // Send mic state OFF control packet only if capture had really started.
-        if (wasRunning) {
+        if (wasRunning && packetize) {
             try {
                 sendControlPacket(ZapProtocol.buildMicStatePacket(false))
             } catch (_: Exception) {}
@@ -336,15 +345,19 @@ class MicAudioRecorder(
                 }
 
                 val isDiscontinuity = (seq == 0)
-                val packet = ZapProtocol.buildMicAudioPacket(
-                    seq = seq,
-                    audioData = buffer,
-                    size = bytesRead,
-                    isPcm = true,
-                    isDiscontinuity = isDiscontinuity
-                )
+                val frame = if (packetize) {
+                    ZapProtocol.buildMicAudioPacket(
+                        seq = seq,
+                        audioData = buffer,
+                        size = bytesRead,
+                        isPcm = true,
+                        isDiscontinuity = isDiscontinuity
+                    )
+                } else {
+                    buffer.copyOf(bytesRead)
+                }
                 seq++
-                sendAudioPacket(packet)
+                sendAudioPacket(frame)
             } else if (bytesRead < 0) {
                 Log.w(TAG, "AudioRecord read error: $bytesRead")
                 break
@@ -396,6 +409,7 @@ class MicAudioRecorder(
         }
     }
 
+    @SuppressLint("MissingPermission") // start() checks RECORD_AUDIO before creating a recorder
     private fun tryCreateRecord(source: Int, bufferSize: Int): AudioRecord? {
         return try {
             val record = AudioRecord(

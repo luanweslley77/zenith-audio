@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.zenith.audio.ime.DictationProtocol
 import com.zenith.audio.mic.MicInputDevice
 import com.zenith.audio.mic.MicSettings
 import com.zenith.audio.mic.MicSourceMode
@@ -215,6 +217,8 @@ class MainActivity : ComponentActivity() {
 
         val prefs = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
         val initialIp = prefs.getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
+        val initialDictationPort = prefs.getInt("dictation_port", DictationProtocol.DEFAULT_PORT)
+        val initialDictationToken = prefs.getString("dictation_token", "").orEmpty()
         pcAudioEnabledState.value = prefs.getBoolean("pc_audio_enabled", true)
         phoneOnlyState.value = prefs.getBoolean("phone_only", false)
 
@@ -252,6 +256,8 @@ class MainActivity : ComponentActivity() {
                         isUsbConnected = isUsbConnectedState.value,
                         pcAudioEnabled = pcAudioEnabledState.value,
                         phoneOnly = phoneOnlyState.value,
+                        initialDictationPort = initialDictationPort,
+                        initialDictationToken = initialDictationToken,
                         onConnect = { ip, bitrate ->
                             // Keep every address already used (LAN and VPN), so
                             // discovery can probe both after a network switch.
@@ -324,6 +330,17 @@ class MainActivity : ComponentActivity() {
                             phoneOnlyState.value = enabled
                             prefs.edit().putBoolean("phone_only", enabled).apply()
                             audioService?.setPhoneOnly(enabled)
+                        },
+                        onSaveDictationSettings = { port, token ->
+                            prefs.edit()
+                                .putInt("dictation_port", port)
+                                .putString("dictation_token", token)
+                                .apply()
+                        },
+                        onOpenImeSettings = {
+                            runCatching {
+                                startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+                            }
                         }
                     )
 
@@ -435,6 +452,8 @@ fun ZenithAudioScreen(
     isUsbConnected: Boolean,
     pcAudioEnabled: Boolean,
     phoneOnly: Boolean,
+    initialDictationPort: Int,
+    initialDictationToken: String,
     onConnect: (String, Int) -> Unit,
     onDisconnect: () -> Unit,
     onBitrateChange: (Int) -> Unit,
@@ -451,7 +470,9 @@ fun ZenithAudioScreen(
     onToggleMic: (Boolean) -> Unit,
     onOpenMicSettings: () -> Unit,
     onTogglePcAudio: (Boolean) -> Unit,
-    onTogglePhoneOnly: (Boolean) -> Unit
+    onTogglePhoneOnly: (Boolean) -> Unit,
+    onSaveDictationSettings: (Int, String) -> Unit,
+    onOpenImeSettings: () -> Unit
 ) {
     var serverIp by remember { mutableStateOf(initialIp) }
     var hasUserEditedIp by remember { mutableStateOf(false) }
@@ -1127,6 +1148,114 @@ fun ZenithAudioScreen(
                         )
                     }
                 }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // ⌨️ VOICE KEYBOARD (DICTATION) — bridge port and token
+        var dictationPortText by remember { mutableStateOf(initialDictationPort.toString()) }
+        var dictationTokenText by remember { mutableStateOf(initialDictationToken) }
+        var dictationSaved by remember { mutableStateOf(false) }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Keyboard,
+                        contentDescription = null,
+                        tint = Color(0xFF40C4FF),
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "VOICE KEYBOARD (DICTATION)",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Fale no celular; o PC transcreve e digita no campo atual",
+                            fontSize = 11.sp,
+                            color = Color(0xFF888888)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = dictationPortText,
+                        onValueChange = { value ->
+                            dictationPortText = value.filter { it.isDigit() }.take(5)
+                            dictationSaved = false
+                        },
+                        label = { Text("Porta", fontSize = 11.sp) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    OutlinedTextField(
+                        value = dictationTokenText,
+                        onValueChange = { value ->
+                            dictationTokenText = value
+                            dictationSaved = false
+                        },
+                        label = { Text("Token (LAN)", fontSize = 11.sp) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1.4f)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            val port = dictationPortText.toIntOrNull()
+                            if (port != null && port in 1..65535) {
+                                onSaveDictationSettings(port, dictationTokenText.trim())
+                                dictationSaved = true
+                            }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF2E7D32),
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("SALVAR", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    OutlinedButton(
+                        onClick = onOpenImeSettings,
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("ATIVAR TECLADO", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    if (dictationSaved) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Salvo", fontSize = 11.sp, color = Color(0xFF00E676))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "O bridge precisa aceitar ${serverIp}:${dictationPortText}. Sem token, deixe o campo vazio.",
+                    fontSize = 10.sp,
+                    color = Color(0xFF777777)
+                )
             }
         }
 
