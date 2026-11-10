@@ -1,0 +1,19 @@
+[Unit]
+Description=Zenith dictation bridge (resident Hex engine)
+Documentation=file://%h/zenith-audio/bridge/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/zenith-audio/bridge
+Environment=HOME=%h
+Environment=PATH=%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/zenith/dictation.env
+ExecStart=%h/.bun/bin/bun run src/index.ts --host 0.0.0.0 --token ${DICTATION_TOKEN} --hex %h/hex/target/release/hex --model custom-7d13a4fb474b2100 --language pt --port 59102
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

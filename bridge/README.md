@@ -62,6 +62,45 @@ Useful flags:
 | `--request-timeout-ms` | `120000` | Caller timeout for one inference |
 | `--log-transcripts` | off | Log preview/final text (off by default) |
 
+## Run as a user service (recommended)
+
+`zenith-dictation.service` keeps the bridge and Hex running across sessions and
+restarts them if they crash. It starts at login; with `linger` enabled it also
+runs without a graphical session.
+
+1. Store the LAN token in a private file (use the same token the app has):
+
+```bash
+mkdir -p ~/.config/zenith
+printf 'DICTATION_TOKEN=%s\n' "$(openssl rand -hex 16)" > ~/.config/zenith/dictation.env
+chmod 600 ~/.config/zenith/dictation.env
+```
+
+2. Install the unit. Adjust `WorkingDirectory`, `--hex` and `--model` in the
+   file if the checkout or the imported model differs; the model id is
+   machine-local.
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp bridge/zenith-dictation.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now zenith-dictation.service
+```
+
+3. Check it:
+
+```bash
+systemctl --user status zenith-dictation.service
+journalctl --user -u zenith-dictation.service -f
+```
+
+The log must show `[bridge] Hex ready` and
+`listening on 0.0.0.0:59102`. If the user service must start before login:
+`sudo loginctl enable-linger "$USER"`.
+
+If the token changes, update both `dictation.env`, the installed unit (if it
+contains the model/paths) and the app's Voice keyboard card.
+
 ## Protocol
 
 One TCP connection per dictation. Each frame is:

@@ -595,7 +595,20 @@ data <bytes>
 
 ### 6.6 Service
 
-A user unit, `zenith-dictation.service`, with `Restart=on-failure`, logs to the journal. The bridge must start after the network is up but does not need the Zenith server.
+The unit is [`bridge/zenith-dictation.service`](../bridge/zenith-dictation.service). It runs Bun + the bridge as a systemd **user** service, starts after `network-online.target`, restarts on failure and logs to the journal. The token is read from `~/.config/zenith/dictation.env` (mode 0600) instead of living in the unit.
+
+```bash
+mkdir -p ~/.config/zenith
+printf 'DICTATION_TOKEN=%s\n' "$(openssl rand -hex 16)" > ~/.config/zenith/dictation.env
+chmod 600 ~/.config/zenith/dictation.env
+
+mkdir -p ~/.config/systemd/user
+cp bridge/zenith-dictation.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now zenith-dictation.service
+```
+
+`systemctl --user status zenith-dictation.service` and `journalctl --user -u zenith-dictation.service -f` show the bridge; the log must reach `[bridge] Hex ready` and `listening on 0.0.0.0:59102`. With `loginctl enable-linger "$USER"` (already enabled on this machine) the service also runs without a graphical login. The app's token must match the value in `dictation.env`; changing one means updating the other.
 
 ### 6.7 Live text (v1, implemented in the bridge)
 
@@ -757,7 +770,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 | `bridge/test/frames.test.ts` | Frame codec |
 | `bridge/test/wav.test.ts` | WAV container |
 | `bridge/test/live-session.test.ts` | Live scheduler, cancellation, audio cap |
-| `bridge/zenith-dictation.service` | systemd user unit (planned) |
+| `bridge/zenith-dictation.service` | systemd user unit (installed) |
 | `android/.../ime/ZenithImeService.kt` | InputMethodService, view, state machine, composing text/commit |
 | `android/.../ime/DictationClient.kt` | TCP connection, writer queue, 100 ms aggregation, reply parsing |
 | `android/.../ime/DictationProtocol.kt` | Frame codec and JSON models shared with the bridge |
@@ -787,6 +800,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 - **Partials are composing text.** Every PARTIAL replaces the previous one with `setComposingText`; the RESULT replaces it with `commitText`. Cancel and errors clear the composing region so no provisional text is left behind.
 - **Tap to toggle, with a local silence stop.** The mic is not a hold gesture: the first tap starts and the next tap stops. A `SilenceDetector` on the recorder thread ends the session after 2 s of RMS below -40 dBFS, so a forgotten session cannot keep the microphone open. The detector runs on the phone, not the bridge: no protocol change, and it also works if the bridge is slow.
 - **The app owns the endpoint.** `NetworkFailoverManager` tracks the active PC address and `AudioReceiverService` publishes it to `active_server_ip`; the IME reads that single value (falling back to `server_ip`). The IME never probes, scans or tries a list of networks — it only opens the connection to the server the app is currently using.
+- **The bridge runs as a systemd user service.** `zenith-dictation.service` starts Bun, which starts `hex service --embedded`; it restarts on failure and starts at login (or without login when linger is enabled). The token comes from a private environment file, not the unit.
 - **Hiding the IME ends the session.** `onFinishInput` alone is not enough: Back and keyboard switches hide the input view without finishing input. `onFinishInputView` and `onWindowHidden` also cancel while the microphone is live, so it is never left running without a visible keyboard; WAITING is exempt so a transient hide does not throw away an in-flight transcript.
 - **Audio device work stays off the main thread.** `AudioRecord` open/close runs on a single capture executor; on a tap stop or silence stop the recorder stops before END is sent. A 500 ms join on the UI thread is an ANR-shaped stall, not an acceptable v1 trade-off.
 - **Whisper with a language hint for pt-BR.** It is the safe native fallback that handles Brazilian Portuguese and prevents the output language from silently changing.
