@@ -5,35 +5,40 @@ import android.content.Context
 /**
  * Preferences shared by the app and the IME.
  *
+ * The IME does not discover or probe networks. The streaming service owns the
+ * current endpoint: NetworkFailoverManager tracks it and
+ * `AudioReceiverService` publishes it to [KEY_ACTIVE_SERVER_IP]. The IME reads
+ * that single address; only when it does not exist yet (fresh install, app
+ * never opened) does it fall back to the configured [KEY_SERVER_IP].
+ *
  * The token is a LAN-scoped bearer secret. It is stored in the app's private
  * `SharedPreferences` and sent over the LAN without TLS, which is the same
- * trust model as ZAP (`docs/phone-dictation.md` §8). Keeping the keys here
- * avoids the app and the IME drifting apart.
+ * trust model as ZAP (`docs/phone-dictation.md` §8).
  */
 object DictationPrefs {
     const val PREFS = "zenith_prefs"
     const val KEY_SERVER_IP = "server_ip"
+    const val KEY_ACTIVE_SERVER_IP = "active_server_ip"
     const val KEY_PORT = "dictation_port"
     const val KEY_TOKEN = "dictation_token"
-    private const val KEY_KNOWN_HOSTS = "known_server_ips"
 
     /**
-     * Every address the app has used for the PC, with the configured one
-     * first. The IME tries them in order, so switching between Wi-Fi
-     * (192.168.x.x) and the WireGuard VPN (10.181.104.x) needs no edit: the
-     * first address that accepts the TCP connection wins. Both are stored by
-     * the app's normal connect/discovery flow.
+     * The PC address the streaming service is currently using. This is the
+     * only address the IME connects to: the app, not the IME, decides between
+     * the Wi-Fi address and the VPN address.
      */
-    fun hosts(context: Context): List<String> {
+    fun activeHost(context: Context): String {
         val prefs = prefs(context)
-        val configured = prefs.getString(KEY_SERVER_IP, "")?.trim().orEmpty()
-        val known = prefs.getStringSet(KEY_KNOWN_HOSTS, emptySet())
-            .orEmpty()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-        return (listOf(configured) + known)
-            .filter { it.isNotEmpty() }
-            .distinct()
+        val active = prefs.getString(KEY_ACTIVE_SERVER_IP, "")?.trim().orEmpty()
+        if (active.isNotEmpty()) return active
+        return prefs.getString(KEY_SERVER_IP, "")?.trim().orEmpty()
+    }
+
+    /** Called by the streaming service whenever its endpoint changes. */
+    fun saveActiveHost(context: Context, host: String) {
+        val trimmed = host.trim()
+        if (trimmed.isEmpty() || trimmed == "127.0.0.1" || trimmed == "localhost") return
+        prefs(context).edit().putString(KEY_ACTIVE_SERVER_IP, trimmed).apply()
     }
 
     fun port(context: Context): Int =

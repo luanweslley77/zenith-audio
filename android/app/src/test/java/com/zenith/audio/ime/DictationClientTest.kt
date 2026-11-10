@@ -4,7 +4,6 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -79,7 +78,7 @@ class DictationClientTest {
         val error = AtomicReference<String?>()
 
         val client = DictationClient(
-            hosts = listOf("127.0.0.1"),
+            host = "127.0.0.1",
             port = server.localPort,
             token = "segredo",
             listener = object : DictationClient.Listener {
@@ -169,7 +168,7 @@ class DictationClientTest {
         val errorCode = AtomicReference<String?>()
 
         val client = DictationClient(
-            hosts = listOf("127.0.0.1"),
+            host = "127.0.0.1",
             port = server.localPort,
             token = "",
             listener = object : DictationClient.Listener {
@@ -202,53 +201,5 @@ class DictationClientTest {
         serverThread.join(5_000)
 
         assertEquals("model-busy", errorCode.get())
-    }
-
-    @Test
-    fun `tries the next address when the first is refused`() {
-        // Bind only 127.0.0.1, so 127.0.0.2:port is refused immediately.
-        val server = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
-        val accepted = CountDownLatch(1)
-        val serverThread = thread(name = "fake-bridge-fallback") {
-            try {
-                server.accept().use { socket ->
-                    accepted.countDown()
-                    val input = socket.getInputStream()
-                    while (input.read() >= 0) {
-                        // Wait for the client to cancel.
-                    }
-                }
-            } catch (_: Throwable) {
-                // The test closes the server on the way out.
-            }
-        }
-
-        val connected = CountDownLatch(1)
-        val client = DictationClient(
-            hosts = listOf("127.0.0.2", "127.0.0.1"),
-            port = server.localPort,
-            token = "",
-            listener = object : DictationClient.Listener {
-                override fun onConnected() {
-                    connected.countDown()
-                }
-
-                override fun onPartial(text: String) = Unit
-
-                override fun onResult(text: String) = Unit
-
-                override fun onError(code: String, message: String) = Unit
-            }
-        )
-
-        try {
-            client.start()
-            assertTrue("did not fall back to the second address", connected.await(5, TimeUnit.SECONDS))
-            assertTrue("the fallback server did not accept", accepted.await(5, TimeUnit.SECONDS))
-        } finally {
-            client.cancel()
-            server.close()
-        }
-        serverThread.join(5_000)
     }
 }

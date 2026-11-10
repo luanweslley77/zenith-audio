@@ -15,6 +15,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.zenith.audio.MainActivity
+import com.zenith.audio.ime.DictationPrefs
 import com.zenith.audio.mic.MicInputDevice
 import com.zenith.audio.mic.MicSettings
 import com.zenith.audio.mic.MicSettingsStore
@@ -92,6 +93,15 @@ class AudioReceiverService : Service() {
         failoverManager = com.zenith.audio.network.NetworkFailoverManager(this) { newTransport, targetIp ->
             receiver?.switchEndpoint(targetIp, transportName = newTransport)
         }.apply { start(savedServerIp) }
+
+        // The failover manager owns which PC address is active (Wi-Fi, VPN or
+        // USB tethering). Publish it so the dictation IME connects to the
+        // current server instead of doing its own network selection.
+        serviceScope.launch {
+            failoverManager?.activeDetectedIp?.collect { ip ->
+                DictationPrefs.saveActiveHost(this@AudioReceiverService, ip)
+            }
+        }
 
         serviceScope.launch {
             serverDiscovery.latestDiscoveredServer.collect { server ->

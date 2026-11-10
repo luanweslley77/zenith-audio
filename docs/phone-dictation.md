@@ -402,7 +402,7 @@ A compact voice keyboard, **not** a full QWERTY:
 - a keyboard-switch button (`switchToNextInputMethod`) so the user can return to Gboard;
 - a settings button that opens the main app.
 
-The PC address comes from the existing `server_ip` preference, filled by `ServerDiscovery`; the IME also tries every address in `known_server_ips`, so it finds the PC through either Wi-Fi or the VPN (§5.9). The bridge port defaults to `59102` and is stored next to it. The main app has a "Voice keyboard" card that edits `dictation_port` and `dictation_token` and opens the system IME settings. The token is masked with a show/hide toggle and is edited in the app, not inside the IME: an editable field inside an IME window would route input through the IME itself, which has no QWERTY keyboard by design.
+The PC address comes from the existing `server_ip` preference, filled by `ServerDiscovery`; the IME uses the endpoint published by the streaming service (`active_server_ip`, falling back to `server_ip`), so it follows Wi-Fi/VPN switches without probing the network itself (§5.9). The bridge port defaults to `59102` and is stored next to it. The main app has a "Voice keyboard" card that edits `dictation_port` and `dictation_token` and opens the system IME settings. The token is masked with a show/hide toggle and is edited in the app, not inside the IME: an editable field inside an IME window would route input through the IME itself, which has no QWERTY keyboard by design.
 
 Use classic Android Views for v1. Compose inside an IME needs a `ComposeView` plus a lifecycle owner and adds failure modes for no user benefit in a screen with three controls. The main activity already uses Compose; the IME can stay on Views until it grows.
 
@@ -505,31 +505,36 @@ The `ime set` command is convenient for development; a normal user enables the
 keyboard under Settings → System → Languages & input → On-screen keyboard and
 switches with the keyboard button or the navigation-bar keyboard picker.
 
-### 5.9 Wi-Fi and VPN
+### 5.9 Wi-Fi and VPN: one active endpoint
 
 The bridge binds to `0.0.0.0`, so it listens on both the LAN address
-(`192.168.3.103`) and the WireGuard address (`10.181.104.2`). Which one the
-phone can reach depends on its current network:
+(`192.168.3.103`) and the WireGuard address (`10.181.104.2`). Which one is
+reachable depends on the phone's current network.
 
-| Phone network | PC address that works |
+The IME does **not** discover, probe or try addresses. Selecting the endpoint
+is the app's job:
+
+1. `NetworkFailoverManager` tracks the transport and the current PC address
+   (`activeDetectedIp`).
+2. `AudioReceiverService` publishes that value to `active_server_ip` in
+   `zenith_prefs` whenever it changes.
+3. The IME connects to `active_server_ip` only, falling back to `server_ip`
+   when the app has never published one.
+
+Switching between Wi-Fi and WireGuard changes what the streaming service uses,
+and the next dictation follows it. If the app has not run or connected since
+the network changed, the last published endpoint is used; open the app once so
+the failover manager can update it.
+
+| Phone network | Typical endpoint |
 |---|---|
 | Wi-Fi at home | `192.168.3.103` |
-| WireGuard, with or without LAN access | `10.181.104.2` |
-
-The app stores the configured address in `server_ip` and every address it has
-used in `known_server_ips`. The IME passes that whole list to
-`DictationClient`, which tries the saved address first and then the others; the
-first TCP connection that succeeds is used. Toggling the VPN therefore needs no
-edit in the app. A failed first attempt costs at most the connect timeout
-(3 s per address); on an address with no route it usually fails immediately.
+| WireGuard | `10.181.104.2` |
+| USB tethering (AOA) | the USB host address |
 
 The firewall accepts TCP 1025-65535 on both interfaces, and the token is the
 same for every address. WireGuard encrypts the dictation traffic in transit;
 without it, the same bytes are plaintext on the LAN.
-
-One caveat: an address only enters `known_server_ips` when the app connects to
-it or discovery finds it. Connect once using the VPN address if the list ever
-loses it.
 
 ---
 
@@ -756,7 +761,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 | `android/.../ime/ZenithImeService.kt` | InputMethodService, view, state machine, composing text/commit |
 | `android/.../ime/DictationClient.kt` | TCP connection, writer queue, 100 ms aggregation, reply parsing |
 | `android/.../ime/DictationProtocol.kt` | Frame codec and JSON models shared with the bridge |
-| `android/.../ime/DictationPrefs.kt` | `zenith_prefs` keys and the ordered host list (Wi-Fi + VPN) |
+| `android/.../ime/DictationPrefs.kt` | Active endpoint, port and token shared with the service |
 | `android/.../ime/SilenceDetector.kt` | 2 s silence auto-stop for tap-to-talk |
 | `android/.../mic/MicSettingsStore.kt` | Shared `zenith_prefs` microphone keys (service + IME) |
 | `android/app/src/main/res/values/colors.xml` | Voice keyboard palette |
@@ -781,7 +786,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 - **Dictation settings live in the app.** Port and token are edited in the main app's voice-keyboard card; the IME only opens it. Editable fields inside an IME window would need the IME to type into itself, and this IME deliberately has no QWERTY.
 - **Partials are composing text.** Every PARTIAL replaces the previous one with `setComposingText`; the RESULT replaces it with `commitText`. Cancel and errors clear the composing region so no provisional text is left behind.
 - **Tap to toggle, with a local silence stop.** The mic is not a hold gesture: the first tap starts and the next tap stops. A `SilenceDetector` on the recorder thread ends the session after 2 s of RMS below -40 dBFS, so a forgotten session cannot keep the microphone open. The detector runs on the phone, not the bridge: no protocol change, and it also works if the bridge is slow.
-- **Dictation tries every known PC address.** Wi-Fi and WireGuard expose the PC at different addresses; the IME tries the saved one and then `known_server_ips`, so toggling the VPN needs no edit. The cost is at most one short connect timeout on the unreachable address.
+- **The app owns the endpoint.** `NetworkFailoverManager` tracks the active PC address and `AudioReceiverService` publishes it to `active_server_ip`; the IME reads that single value (falling back to `server_ip`). The IME never probes, scans or tries a list of networks — it only opens the connection to the server the app is currently using.
 - **Hiding the IME ends the session.** `onFinishInput` alone is not enough: Back and keyboard switches hide the input view without finishing input. `onFinishInputView` and `onWindowHidden` also cancel while the microphone is live, so it is never left running without a visible keyboard; WAITING is exempt so a transient hide does not throw away an in-flight transcript.
 - **Audio device work stays off the main thread.** `AudioRecord` open/close runs on a single capture executor; on a tap stop or silence stop the recorder stops before END is sent. A 500 ms join on the UI thread is an ANR-shaped stall, not an acceptable v1 trade-off.
 - **Whisper with a language hint for pt-BR.** It is the safe native fallback that handles Brazilian Portuguese and prevents the output language from silently changing.
