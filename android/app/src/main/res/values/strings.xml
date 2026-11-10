@@ -4,8 +4,8 @@
     <!-- Voice keyboard (IME) -->
     <string name="ime_name">Zenith Voice</string>
     <string name="ime_subtype_ptbr">Português (Brasil)</string>
-    <string name="ime_hold_to_talk">Segure para falar</string>
-    <string name="ime_release_to_transcribe">Solte para transcrever</string>
+    <string name="ime_tap_to_talk">Toque para falar</string>
+    <string name="ime_tap_to_stop">Toque para parar</string>
     <string name="ime_connecting">Conectando…</string>
     <string name="ime_transcribing_short">Transcrevendo…</string>
     <string name="ime_cancel">Cancelar</string>
@@ -13,13 +13,12 @@
     <string name="ime_settings">⚙</string>
     <string name="ime_settings_description">Ajustes do Zenith</string>
 
-    <string name="ime_status_idle">%1$s:%2$d · segure o microfone e fale</string>
+    <string name="ime_status_idle">%1$s:%2$d · toque no microfone para falar</string>
     <string name="ime_status_no_server">Abra o app Zenith e conecte ao PC uma vez</string>
     <string name="ime_status_no_permission">Permita o microfone no app Zenith</string>
     <string name="ime_status_connecting">Conectando a %1$s:%2$d…</string>
-    <string name="ime_status_listening">Ouvindo… solte para transcrever</string>
+    <string name="ime_status_listening">Ouvindo… toque para parar (2 s de silêncio encerram)</string>
     <string name="ime_status_transcribing">Transcrevendo no PC…</string>
-    <string name="ime_status_too_short">Segure e fale</string>
 
     <string name="ime_toast_no_server">Configure o PC no app Zenith Audio</string>
     <string name="ime_toast_no_permission">Conceda a permissão de microfone ao Zenith Audio</string>

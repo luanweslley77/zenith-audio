@@ -33,7 +33,7 @@
             android:layout_height="56dp"
             android:layout_weight="1"
             android:backgroundTint="@color/ime_mic"
-            android:text="@string/ime_hold_to_talk"
+            android:text="@string/ime_tap_to_talk"
             android:textAllCaps="false"
             android:textColor="@android:color/white"
             android:textSize="14sp" />

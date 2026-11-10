@@ -82,7 +82,7 @@ The model choice matters more than any code in this document. Parakeet v3 is not
 
 - NVIDIA's model card, evaluation note 2: *"our training data uses European Portuguese while most benchmarks use Brazilian Portuguese."* Vocabulary and accent are pt-PT, not pt-BR.
 - The model **has no language input or output**. NVIDIA closed the request for one with *"unfortunately parakeet-v3 model doesn't receive or output language id"* (NVIDIA-NeMo/Speech#14799). It guesses from the audio.
-- Because it guesses, short spans are unstable: a reported 90 s pt-BR recording came out in Portuguese, while a 25 s slice of the same audio came out in fluent English. For hold-to-talk dictation (a few seconds), that is the worst possible failure mode.
+- Because it guesses, short spans are unstable: a reported 90 s pt-BR recording came out in Portuguese, while a 25 s slice of the same audio came out in fluent English. For short tap-to-talk dictation (a few seconds), that is the worst possible failure mode.
 
 Options with external evidence (Portuguese WER from a public pt-BR comparison; prepared = read speech, spontaneous = natural speech):
 
@@ -189,7 +189,7 @@ Hex pins `anomalyco/transcribe.cpp` at rev `2778ae4`, which carries the same bug
 ```mermaid
 flowchart LR
     subgraph Phone
-        A[Zenith Voice IME] -->|hold to talk| B[DictationClient<br/>TCP + framing]
+        A[Zenith Voice IME] -->|tap to talk| B[DictationClient<br/>TCP + framing]
         B --> C[InputConnection.commitText]
     end
 
@@ -396,7 +396,7 @@ Manifest additions:
 
 A compact voice keyboard, **not** a full QWERTY:
 
-- a large press-and-hold microphone button;
+- a large tap-to-toggle microphone button (tap to start, tap to stop; 2 s of silence also stops);
 - a status line ("Conectando…", "Ouvindo…", "Transcrevendo…");
 - a cancel button while a session is active;
 - a keyboard-switch button (`switchToNextInputMethod`) so the user can return to Gboard;
@@ -406,7 +406,7 @@ The PC address comes from the existing `server_ip` preference, filled by `Server
 
 Use classic Android Views for v1. Compose inside an IME needs a `ComposeView` plus a lifecycle owner and adds failure modes for no user benefit in a screen with three controls. The main activity already uses Compose; the IME can stay on Views until it grows.
 
-The mic button has both interaction paths: press-and-hold for touch, and a click toggle for TalkBack/switch access (first activation starts, the next stops). The status line and the button text are the accessibility labels; there are no icon-only controls.
+The mic button is a tap toggle: the first tap starts, the next tap stops. It is not a hold gesture, so TalkBack and switch access use the same activation. The status line and the button text are the accessibility labels; there are no icon-only controls.
 
 ### 5.3 Capture
 
@@ -435,8 +435,8 @@ recording.
 
 Opening and releasing `AudioRecord` can take tens to hundreds of milliseconds,
 so the IME runs them on a single capture executor, never on the main thread.
-On release, the recorder stops first and only then is `END` sent, so the last
-10 ms frame is not lost.
+When the user taps stop (or the silence detector fires), the recorder stops first
+and only then is `END` sent, so the last 10 ms frame is not lost.
 
 Refactor only if the class grows: extract `MicDsp` (high-pass, gain, limiter)
 and a `MicFrameSink` interface. Do not rewrite it for the MVP.
@@ -447,7 +447,7 @@ and a `MicFrameSink` interface. Do not rewrite it for the MVP.
 
 - `enqueue(frame)` never blocks the audio thread.
 - If the queue fills, the session aborts locally with `network-slow` instead of silently dropping words.
-- On release: `END`, `socket.shutdownOutput()`, then read the reply with a 120 s timeout.
+- On stop (second tap or 2 s of silence): `END`, `socket.shutdownOutput()`, then read the reply with a 120 s timeout.
 
 ### 5.5 Insertion
 
@@ -466,21 +466,22 @@ if (ic != null) {
 ### 5.6 State machine
 
 ```text
-Idle ──press──▶ Connecting ──ok──▶ Recording ──release──▶ Waiting ──text──▶ Inserting ──▶ Idle
+Idle ──tap──▶ Connecting ──ok──▶ Recording ──tap/2 s silence──▶ Waiting ──text──▶ Inserting ──▶ Idle
   ▲                   │                  │                    │
   └────error/cancel───┴──────────────────┴────────────────────┘
 ```
 
+- **Tap to toggle.** The mic button is not a hold gesture: tap starts, the next tap stops and transcribes. This is also the only path assistive technologies need.
+- **Silence auto-stop.** The IME computes RMS per captured frame (10 ms, threshold 0.01 normalized, -40 dBFS). After **2 s** below the threshold it stops the capture and sends `END`, exactly as if the user had tapped stop. The detector is created per session and fires once.
 - **Cancel** (button, hiding the keyboard with Back or an IME switch, screen off): stop capture, close the socket without `END`, return to `Idle`. Hiding the input view calls `onFinishInputView`; a temporarily hidden window calls `onWindowHidden`; both cancel **while capturing** (CONNECTING/RECORDING). A session already in WAITING is left to finish, so a transient hide does not discard an utterance that is already being transcribed. Relying only on `onFinishInput` would leave the microphone on when the keyboard is merely hidden.
 - **Timeout**: 120 s waiting for the result, then show an error and close.
 - **Permission missing**: open the main activity to request `RECORD_AUDIO` (same app, so a grant covers the IME too).
 - **PC unreachable**: show "PC indisponível" with the configured address and a shortcut to the settings; do not start recording.
-- **Minimum hold**: shorter than ~300 ms → "segure e fale", no request.
 
 ### 5.7 Do not
 
 - Do not run the IME's capture while the Zenith mic service is also capturing, unless concurrent capture is verified on the device. Prefer to pause the service during dictation; Android 11 on the Poco X3 may give the audio to only one client.
-- Do not keep the screen awake with a wakelock for a hold-to-talk gesture; the IME is visible and focused while the key is held.
+- Do not add a wakelock for dictation; the 2 s silence stop bounds a forgotten tap-to-talk session.
 - Do not commit `""` (it can clear a selection); skip empty results.
 
 ### 5.8 Build and enable
@@ -497,7 +498,8 @@ adb shell ime set com.zenith.audio/.ime.ZenithImeService
 
 On the PC, start the bridge bound to the LAN with a token (bridge README). In
 the app's "Voice keyboard" card, set the port and token and press "Ativar
-teclado". Then hold the mic in any text field.
+teclado". Then tap the mic in any text field, speak, and tap again (or wait
+2 s without speaking).
 
 The `ime set` command is convenient for development; a normal user enables the
 keyboard under Settings → System → Languages & input → On-screen keyboard and
@@ -603,12 +605,12 @@ Decision record: [ADR 0001](adr/0001-live-text-in-the-bridge.md) explains why th
 
 ```text
 1. User focuses a text field on the phone and selects the Zenith Voice keyboard.
-2. User presses and holds the mic key.
+2. User taps the mic key (first tap starts; it is not a hold gesture).
 3. IME opens TCP to the PC, sends START with live: true, starts AudioRecord.
 4. Every 10 ms the recorder emits PCM16; the client buffers and writes 100 ms frames.
 5. While the person speaks, the bridge re-transcribes the tail and sends PARTIAL;
    the IME replaces the composing text with each preview.
-6. User releases.
+6. User taps stop, or the IME detects 2 s without speech.
 7. IME stops the recorder, sends END, half-closes.
 8. Bridge waits for an in-flight preview, transcribes the whole utterance, sends RESULT.
 9. IME commits the final text with commitText(text, 1) and returns to Idle.
@@ -641,13 +643,13 @@ For a 10-second utterance, LAN, GPU inference:
 
 | Step | Typical |
 |---|---|
-| Last 100 ms chunk flush after release | 0–100 ms |
+| Last 100 ms chunk flush after stop | 0–100 ms |
 | TCP on Wi-Fi | 1–5 ms |
 | WAV assembly | < 5 ms |
 | Hex inference (Parakeet `-30s`, ~29× realtime on CPU in the CLI; Vulkan faster) | ~350 ms |
 | In-flight preview to drain | 0–500 ms |
 | Return + `commitText` | < 10 ms |
-| **Total after release** | **~0.4–1.0 s** |
+| **Total after stop** | **~0.4–1.0 s** |
 
 Notes:
 
@@ -679,7 +681,7 @@ Notes:
 | **0 — Validate (zero code)** | Install Hex, set "Zenith Wireless Microphone" as Hex's microphone, and dictate in Portuguese. The pt-BR `-30s` model is converted and imported (§16); Whisper and stock v3 are the comparison points. | Text appears in a KDE app; quality is acceptable; latency measured. Stock v3's pt-PT drift is confirmed on short phrases. |
 | **0.5 — validate on the user's voice** | Record 10–15 phrases (numbers, names, accents, code terms) once. Transcribe the same WAVs with the chosen `-30s` model, Whisper and stock v3. Score errors by hand. | The `-30s` model stays the default unless it fails badly on this speaker; the run also provides the reference recordings for the bridge tests. |
 | **1 — Bridge + live test** | The bridge (TCP, resident Hex engine, live tail passes, final whole-clip pass) and the `live-test` client are implemented in `bridge/`. A "Test transcription" button in the app can follow. | `bun run live-test` prints PARTIAL frames while the WAV streams and a final RESULT that matches the reference; round trip < 2 s for a 10 s utterance without live, and the final is not delayed by more than one tail pass with live; the two #252 clips return full text; the main error paths are reachable. |
-| **2 — IME** | Implemented in `android/.../ime/`: `ZenithImeService`, `DictationClient`, `DictationProtocol`, the voice layout/declaration and the settings card. | **Code complete and unit-tested; on-device validation pending.** Works in WhatsApp, Chrome and Notes; partials show underlined and are replaced by the final; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
+| **2 — IME** | Implemented in `android/.../ime/`: `ZenithImeService`, `DictationClient`, `DictationProtocol`, `SilenceDetector`, the voice layout/declaration and the settings card. | **Code complete and unit-tested; on-device validation pending.** Works in WhatsApp, Chrome and Notes; a tap starts and a tap (or 2 s of silence) stops; partials show underlined and are replaced by the final; text lands at the cursor; cancel discards; screen-off stops; no ANR. |
 | **3 — Polish** | Model/language picker, token pairing, undo (`deleteSurroundingText`), PC-target shortcut, better pause detection. | Each item independently verified. |
 
 Phase 0 is not optional. It answers the biggest unknown — does the model understand this user's Brazilian Portuguese through this microphone? — before any code exists. Phase 0.5 decides the model with evidence instead of a model card.
@@ -700,8 +702,9 @@ behaviour of each app, and concurrent capture with the streaming service.
 5. **Live preview quality:** the pause heuristic (`findSpeechStart`, RMS < 0.01 for 100 ms) was tuned on clean 48 kHz audio. Test with the phone's noise floor and the chosen mic/Gain settings; lower the threshold or extend the pause search if previews start mid-word.
 6. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
 7. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
-8. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt, but verify long holds.
+8. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt; verify that a forgotten tap-to-talk session stops after 2 s of silence.
 9. **On-device IME validation:** install the APK, enable "Zenith Voice", set the bridge port/token, and dictate into Notes, Chrome and WhatsApp. Items 5–8 are observed there; none of them can be proven by the JVM tests.
+10. **Silence threshold:** the auto-stop uses RMS < 0.01 (-40 dBFS), the same order as the bridge's pause heuristic. Test it with the phone's noise floor and the chosen mic/gain; lower it if a noisy room keeps the session alive, raise it if normal pauses trigger too early.
 
 ---
 
@@ -728,6 +731,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 | `android/.../ime/DictationClient.kt` | TCP connection, writer queue, 100 ms aggregation, reply parsing |
 | `android/.../ime/DictationProtocol.kt` | Frame codec and JSON models shared with the bridge |
 | `android/.../ime/DictationPrefs.kt` | `zenith_prefs` keys shared by the app and the IME |
+| `android/.../ime/SilenceDetector.kt` | 2 s silence auto-stop for tap-to-talk |
 | `android/.../mic/MicSettingsStore.kt` | Shared `zenith_prefs` microphone keys (service + IME) |
 | `android/app/src/main/res/values/colors.xml` | Voice keyboard palette |
 | `android/app/src/main/res/xml/method.xml` | IME declaration and subtypes |
@@ -735,6 +739,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 | `android/app/src/main/AndroidManifest.xml` | Service + `BIND_INPUT_METHOD` |
 | `android/app/src/test/java/com/zenith/audio/ime/DictationProtocolTest.kt` | Frame codec and JSON payloads |
 | `android/app/src/test/java/com/zenith/audio/ime/DictationClientTest.kt` | Client against a fake bridge (START, AUDIO, END, PARTIAL, RESULT, ERROR) |
+| `android/app/src/test/java/com/zenith/audio/ime/SilenceDetectorTest.kt` | Silence run, reset on speech, partial frames |
 
 ---
 
@@ -749,8 +754,9 @@ behaviour of each app, and concurrent capture with the streaming service.
 - **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; a `packetize = false` flag hands over raw PCM16 and skips ZAP controls instead of adding a second capture implementation.
 - **Dictation settings live in the app.** Port and token are edited in the main app's voice-keyboard card; the IME only opens it. Editable fields inside an IME window would need the IME to type into itself, and this IME deliberately has no QWERTY.
 - **Partials are composing text.** Every PARTIAL replaces the previous one with `setComposingText`; the RESULT replaces it with `commitText`. Cancel and errors clear the composing region so no provisional text is left behind.
+- **Tap to toggle, with a local silence stop.** The mic is not a hold gesture: the first tap starts and the next tap stops. A `SilenceDetector` on the recorder thread ends the session after 2 s of RMS below -40 dBFS, so a forgotten session cannot keep the microphone open. The detector runs on the phone, not the bridge: no protocol change, and it also works if the bridge is slow.
 - **Hiding the IME ends the session.** `onFinishInput` alone is not enough: Back and keyboard switches hide the input view without finishing input. `onFinishInputView` and `onWindowHidden` also cancel while the microphone is live, so it is never left running without a visible keyboard; WAITING is exempt so a transient hide does not throw away an in-flight transcript.
-- **Audio device work stays off the main thread.** `AudioRecord` open/close runs on a single capture executor; on release the recorder stops before END is sent. A 500 ms join on the UI thread is an ANR-shaped stall, not an acceptable v1 trade-off.
+- **Audio device work stays off the main thread.** `AudioRecord` open/close runs on a single capture executor; on a tap stop or silence stop the recorder stops before END is sent. A 500 ms join on the UI thread is an ANR-shaped stall, not an acceptable v1 trade-off.
 - **Whisper with a language hint for pt-BR.** It is the safe native fallback that handles Brazilian Portuguese and prevents the output language from silently changing.
 - **The `-30s` pt-BR fine-tune is the chosen model**, validated on read and spontaneous speech and imported into Hex (§16). The `-plus` checkpoint is not public; `tagarela-v2` is a 1024-token English lineage and was rejected.
 - **Do not log transcripts by default.** Voice text is sensitive.

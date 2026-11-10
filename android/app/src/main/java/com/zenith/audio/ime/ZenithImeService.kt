@@ -11,10 +11,8 @@ import android.inputmethodservice.InputMethodService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import android.view.HapticFeedbackConstants
-import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -63,7 +61,6 @@ class ZenithImeService : InputMethodService() {
     @Volatile
     private var client: DictationClient? = null
     private var recorder: MicAudioRecorder? = null
-    private var pressStartedAt = 0L
 
     private val maxDurationRunnable = Runnable {
         if (state == State.RECORDING) {
@@ -129,45 +126,23 @@ class ZenithImeService : InputMethodService() {
         )
     }
 
-    @SuppressLint("InflateParams", "ClickableViewAccessibility")
+    @SuppressLint("InflateParams")
     override fun onCreateInputView(): View {
         val view = layoutInflater.inflate(R.layout.ime_voice, null)
         statusText = view.findViewById(R.id.ime_status)
         micButton = view.findViewById(R.id.ime_mic)
         cancelButton = view.findViewById(R.id.ime_cancel)
 
-        micButton?.setOnTouchListener { button, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    button.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    pressStartedAt = SystemClock.elapsedRealtime()
-                    startDictation()
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    releaseDictation()
-                    true
-                }
-                MotionEvent.ACTION_CANCEL -> {
-                    cancelDictation(clearPreview = true, notify = false)
-                    true
-                }
-                else -> false
-            }
-        }
-
         cancelButton?.setOnClickListener {
             cancelDictation(clearPreview = true, notify = true)
         }
-        // TalkBack and switch-access activate a view with performClick(), not
-        // with raw touch events. The click path is a toggle: first activation
-        // starts, the next stops. Touch users keep press-and-hold.
-        micButton?.setOnClickListener {
+        // Tap to start, tap again to stop. The session also stops by itself
+        // after two seconds without speech (SilenceDetector), so the button is
+        // never a hold gesture.
+        micButton?.setOnClickListener { button ->
+            button.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             when (state) {
-                State.IDLE -> {
-                    pressStartedAt = SystemClock.elapsedRealtime()
-                    startDictation()
-                }
+                State.IDLE -> startDictation()
                 State.RECORDING -> finishRecording()
                 State.CONNECTING -> cancelDictation(clearPreview = true, notify = false)
                 State.WAITING -> Unit
@@ -274,9 +249,16 @@ class ZenithImeService : InputMethodService() {
             // The session may have been cancelled while this task was queued.
             if (destroyed || client !== session) return@execute
 
+            // A fresh detector per session: the 2 s count starts with capture.
+            val silence = SilenceDetector()
             val capture = MicAudioRecorder(
                 context = this,
-                sendAudioPacket = { frame -> session.enqueue(frame) },
+                sendAudioPacket = { frame ->
+                    session.enqueue(frame)
+                    if (silence.onFrame(frame)) {
+                        mainHandler.post { autoStopFromSilence() }
+                    }
+                },
                 sendControlPacket = {},
                 packetize = false
             )
@@ -311,19 +293,11 @@ class ZenithImeService : InputMethodService() {
         }
     }
 
-    private fun releaseDictation() {
-        when (state) {
-            State.CONNECTING -> cancelDictation(clearPreview = true, notify = true)
-            State.RECORDING -> {
-                val heldMs = SystemClock.elapsedRealtime() - pressStartedAt
-                if (heldMs < MIN_HOLD_MS) {
-                    cancelDictation(clearPreview = true, notify = true)
-                    setStatus(getString(R.string.ime_status_too_short))
-                } else {
-                    finishRecording()
-                }
-            }
-            State.WAITING, State.IDLE -> Unit
+    /** Called from the recorder thread's silence detector, then posted here. */
+    private fun autoStopFromSilence() {
+        if (state == State.RECORDING) {
+            Log.i(TAG, "Two seconds without speech; finishing dictation")
+            finishRecording()
         }
     }
 
@@ -453,9 +427,9 @@ class ZenithImeService : InputMethodService() {
     private fun updateSessionUi() {
         micButton?.setText(
             when (state) {
-                State.IDLE -> R.string.ime_hold_to_talk
+                State.IDLE -> R.string.ime_tap_to_talk
                 State.CONNECTING -> R.string.ime_connecting
-                State.RECORDING -> R.string.ime_release_to_transcribe
+                State.RECORDING -> R.string.ime_tap_to_stop
                 State.WAITING -> R.string.ime_transcribing_short
             }
         )
@@ -503,7 +477,6 @@ class ZenithImeService : InputMethodService() {
 
     private companion object {
         const val TAG = "ZenithImeService"
-        const val MIN_HOLD_MS = 300L
         const val MAX_DICTATION_MS = 120_000L
         const val RESULT_TIMEOUT_MS = 120_000L
     }
