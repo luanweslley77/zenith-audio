@@ -209,8 +209,8 @@ class ZenithImeService : InputMethodService() {
     private fun startDictation() {
         if (state != State.IDLE) return
 
-        val host = DictationPrefs.host(this)
-        if (host.isEmpty()) {
+        val hosts = DictationPrefs.hosts(this)
+        if (hosts.isEmpty()) {
             setStatus(getString(R.string.ime_status_no_server))
             toast(getString(R.string.ime_toast_no_server))
             openSettings()
@@ -229,11 +229,11 @@ class ZenithImeService : InputMethodService() {
         val token = DictationPrefs.token(this)
 
         state = State.CONNECTING
-        setStatus(getString(R.string.ime_status_connecting, host, port))
+        setStatus(getString(R.string.ime_status_connecting, hosts.first(), port))
         updateSessionUi()
 
         val session = DictationClient(
-            host = host,
+            hosts = hosts,
             port = port,
             token = token,
             listener = ioListener
@@ -416,7 +416,7 @@ class ZenithImeService : InputMethodService() {
     private fun renderIdle() {
         state = State.IDLE
         updateSessionUi()
-        val host = DictationPrefs.host(this)
+        val host = DictationPrefs.hosts(this).firstOrNull().orEmpty()
         val port = DictationPrefs.port(this)
         setStatus(
             if (host.isEmpty()) getString(R.string.ime_status_no_server)

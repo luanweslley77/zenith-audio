@@ -25,7 +25,7 @@
     <string name="ime_toast_cancelled">Ditado cancelado</string>
     <string name="ime_toast_no_field">Campo de texto indisponível — texto descartado</string>
 
-    <string name="ime_error_connection">PC indisponível — verifique a rede e o bridge</string>
+    <string name="ime_error_connection">PC indisponível — verifique a rede/VPN e o bridge</string>
     <string name="ime_error_network_slow">Rede lenta: ditado cancelado</string>
     <string name="ime_error_timeout">O PC não respondeu a tempo</string>
     <string name="ime_error_model_busy">O PC está ocupado com outro ditado</string>

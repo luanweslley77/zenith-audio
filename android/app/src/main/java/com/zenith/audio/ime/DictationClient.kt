@@ -18,19 +18,26 @@ import java.util.concurrent.atomic.AtomicBoolean
  * never stall capture. The writer aggregates 10 ms recorder frames into
  * 100 ms AUDIO frames, as the protocol specifies.
  *
+ * The bridge address is a list: the client tries the saved address first and
+ * then the other addresses the app has used for the PC. That is what makes
+ * dictation survive a switch between the phone's Wi-Fi and a VPN.
+ *
  * Callbacks are normally invoked on the I/O thread; `network-slow` is
  * reported from the recorder thread that filled the queue. The service
  * marshals every callback to the main thread.
  */
 class DictationClient(
-    private val host: String,
+    private val hosts: List<String>,
     private val port: Int,
     private val token: String,
     private val listener: Listener,
     private val live: Boolean = true,
-    private val connectTimeoutMs: Int = 5_000,
+    private val connectTimeoutMs: Int = 3_000,
     private val resultTimeoutMs: Int = 120_000
 ) {
+    init {
+        require(hosts.isNotEmpty()) { "at least one bridge address is required" }
+    }
     interface Listener {
         fun onConnected()
         fun onPartial(text: String)
@@ -80,10 +87,8 @@ class DictationClient(
     }
 
     private fun runSession() {
-        val sock = Socket()
-        socket = sock
         try {
-            sock.connect(InetSocketAddress(host, port), connectTimeoutMs)
+            val sock = openSocket()
             sock.tcpNoDelay = true
             sock.soTimeout = resultTimeoutMs
 
@@ -108,6 +113,35 @@ class DictationClient(
             closeSocket()
             writerThread?.interrupt()
         }
+    }
+
+    /**
+     * Tries every known address in order and returns the first socket that
+     * accepts the TCP connection. The PC may be reachable on its Wi-Fi address
+     * or on its VPN address depending on the phone's current network, so a
+     * failed first attempt is expected, not fatal.
+     */
+    private fun openSocket(): Socket {
+        var lastError: IOException? = null
+        for (host in hosts) {
+            if (cancelled.get()) throw IOException("cancelled")
+            val candidate = Socket()
+            socket = candidate
+            try {
+                candidate.connect(InetSocketAddress(host, port), connectTimeoutMs)
+                return candidate
+            } catch (e: IOException) {
+                lastError = e
+                try {
+                    candidate.close()
+                } catch (_: IOException) {
+                }
+            }
+        }
+        throw IOException(
+            "could not reach ${hosts.joinToString()} on port $port" +
+                (lastError?.message?.let { ": $it" } ?: "")
+        )
     }
 
     private fun startWriter(sock: Socket) {
