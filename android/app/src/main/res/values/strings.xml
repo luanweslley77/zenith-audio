@@ -19,6 +19,7 @@
     <string name="ime_status_connecting">Conectando a %1$s:%2$d…</string>
     <string name="ime_status_listening">Ouvindo… toque para parar (2 s de silêncio encerram)</string>
     <string name="ime_status_transcribing">Transcrevendo no PC…</string>
+    <string name="ime_status_no_text">Nada foi reconhecido — fale mais perto do microfone</string>
 
     <string name="ime_toast_no_server">Configure o PC no app Zenith Audio</string>
     <string name="ime_toast_no_permission">Conceda a permissão de microfone ao Zenith Audio</string>

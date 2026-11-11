@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.TextView
@@ -62,6 +63,14 @@ class ZenithImeService : InputMethodService() {
     private var client: DictationClient? = null
     private var recorder: MicAudioRecorder? = null
 
+    /**
+     * The connection that was focused when the user stopped recording. The
+     * framework can finish the input (focus change, app closing the field)
+     * while the bridge is still transcribing; the result must still target
+     * that field instead of being thrown away.
+     */
+    private var pendingConnection: InputConnection? = null
+
     private val maxDurationRunnable = Runnable {
         if (state == State.RECORDING) {
             Log.i(TAG, "Dictation reached the ${MAX_DICTATION_MS / 1000} s cap; finishing")
@@ -94,16 +103,25 @@ class ZenithImeService : InputMethodService() {
         override fun onPartial(text: String) {
             mainHandler.post {
                 if (state != State.RECORDING && state != State.WAITING) return@post
-                runCatching { currentInputConnection?.setComposingText(text, 1) }
+                val connection = currentInputConnection ?: pendingConnection
+                runCatching { connection?.setComposingText(text, 1) }
             }
         }
 
         override fun onResult(text: String) {
             mainHandler.post {
-                if (state != State.WAITING) return@post
-                endSession(clearPreview = false)
-                commitText(text)
+                if (state != State.WAITING) {
+                    Log.w(TAG, "Dropping result of ${text.length} chars: state=$state")
+                    return@post
+                }
+                // Commit while the connection is still ours, before the
+                // session teardown changes UI state.
+                val committed = commitText(text)
+                endSession(clearPreview = !committed)
                 renderIdle()
+                if (text.isBlank()) {
+                    setStatus(getString(R.string.ime_status_no_text))
+                }
             }
         }
 
@@ -177,7 +195,15 @@ class ZenithImeService : InputMethodService() {
     }
 
     override fun onFinishInput() {
-        cancelDictation(clearPreview = true, notify = false)
+        // onFinishInput fires when the field loses its connection, which can
+        // happen while the bridge is still transcribing after the user tapped
+        // stop. Keep that utterance alive and remember its connection so the
+        // result can still be committed; only a live capture is cancelled.
+        if (state == State.WAITING) {
+            pendingConnection = currentInputConnection ?: pendingConnection
+        } else {
+            cancelDictation(clearPreview = true, notify = false)
+        }
         super.onFinishInput()
     }
 
@@ -208,6 +234,7 @@ class ZenithImeService : InputMethodService() {
 
     private fun startDictation() {
         if (state != State.IDLE) return
+        pendingConnection = null
 
         val host = DictationPrefs.activeHost(this)
         if (host.isEmpty()) {
@@ -308,6 +335,8 @@ class ZenithImeService : InputMethodService() {
         val capture = recorder
         recorder = null
         val session = client
+        // The connection is valid now; it may not be when RESULT arrives.
+        pendingConnection = currentInputConnection ?: pendingConnection
         state = State.WAITING
         setStatus(getString(R.string.ime_status_transcribing))
         updateSessionUi()
@@ -369,6 +398,7 @@ class ZenithImeService : InputMethodService() {
         client = null
         state = State.IDLE
         if (clearPreview) clearComposing()
+        pendingConnection = null
         renderIdle()
         if (notify) toast(getString(R.string.ime_toast_cancelled))
     }
@@ -388,30 +418,44 @@ class ZenithImeService : InputMethodService() {
         client = null
         state = State.IDLE
         if (clearPreview) clearComposing()
+        pendingConnection = null
         updateSessionUi()
     }
 
-    private fun commitText(text: String) {
-        val connection = currentInputConnection
-        if (connection == null) {
-            toast(getString(R.string.ime_toast_no_field))
-            return
-        }
+    /**
+     * Commits [text] to the focused field. Falls back to the connection that
+     * was focused when the user stopped recording if the framework already
+     * finished the input; returns false when neither connection accepted it.
+     */
+    private fun commitText(text: String): Boolean {
+        val connection = currentInputConnection ?: pendingConnection
         if (text.isBlank()) {
             // Empty results are common on silence; committing "" can clear a
             // selection, so only drop the provisional composing text.
-            clearComposing()
-            return
+            clearComposing(connection)
+            return true
         }
-        runCatching { connection.commitText(text, 1) }
-            .onFailure {
-                Log.w(TAG, "commitText failed", it)
-                toast(getString(R.string.ime_toast_no_field))
-            }
+        if (connection == null) {
+            Log.w(TAG, "No input connection for ${text.length} chars")
+            toast(getString(R.string.ime_toast_no_field))
+            return false
+        }
+        val committed = runCatching { connection.commitText(text, 1) }
+            .onFailure { Log.w(TAG, "commitText failed", it) }
+            .getOrDefault(false)
+        if (committed) {
+            Log.i(TAG, "Committed ${text.length} chars")
+            return true
+        }
+        Log.w(TAG, "commitText refused ${text.length} chars")
+        toast(getString(R.string.ime_toast_no_field))
+        return false
     }
 
-    private fun clearComposing() {
-        runCatching { currentInputConnection?.setComposingText("", 1) }
+    private fun clearComposing(
+        connection: InputConnection? = currentInputConnection ?: pendingConnection
+    ) {
+        runCatching { connection?.setComposingText("", 1) }
     }
 
     private fun renderIdle() {
