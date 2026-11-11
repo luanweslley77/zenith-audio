@@ -40,6 +40,9 @@ class ZenithImeService : InputMethodService() {
 
     private enum class State { IDLE, CONNECTING, RECORDING, WAITING }
 
+    /** What happened to a RESULT when the IME tried to insert it. */
+    private enum class CommitOutcome { INSERTED, EMPTY, NO_FIELD }
+
     private var state = State.IDLE
     private var statusText: TextView? = null
     private var micButton: Button? = null
@@ -103,7 +106,10 @@ class ZenithImeService : InputMethodService() {
         override fun onPartial(text: String) {
             mainHandler.post {
                 if (state != State.RECORDING && state != State.WAITING) return@post
-                val connection = currentInputConnection ?: pendingConnection
+                // Partials follow the focused field. If focus moves, the old
+                // field's preview is cleared on finish and the final commit
+                // inserts into the new field.
+                val connection = previewConnection()
                 runCatching { connection?.setComposingText(text, 1) }
             }
         }
@@ -116,10 +122,10 @@ class ZenithImeService : InputMethodService() {
                 }
                 // Commit while the connection is still ours, before the
                 // session teardown changes UI state.
-                val committed = commitText(text)
-                endSession(clearPreview = !committed)
+                val outcome = commitText(text)
+                endSession(clearPreview = outcome != CommitOutcome.INSERTED)
                 renderIdle()
-                if (text.isBlank()) {
+                if (outcome == CommitOutcome.EMPTY) {
                     setStatus(getString(R.string.ime_status_no_text))
                 }
             }
@@ -200,7 +206,13 @@ class ZenithImeService : InputMethodService() {
         // stop. Keep that utterance alive and remember its connection so the
         // result can still be committed; only a live capture is cancelled.
         if (state == State.WAITING) {
-            pendingConnection = currentInputConnection ?: pendingConnection
+            if (pendingConnection == null) {
+                pendingConnection = currentInputConnection
+            }
+            // The field being finished must not keep our provisional underline;
+            // the final text will go to the next focused field (or to this one
+            // through the saved connection when nothing else has focus).
+            clearComposing(currentInputConnection)
         } else {
             cancelDictation(clearPreview = true, notify = false)
         }
@@ -423,38 +435,56 @@ class ZenithImeService : InputMethodService() {
     }
 
     /**
-     * Commits [text] to the focused field. Falls back to the connection that
-     * was focused when the user stopped recording if the framework already
-     * finished the input; returns false when neither connection accepted it.
+     * Commits [text] to the currently focused field. If the framework already
+     * finished that input, the connection saved when the user stopped is the
+     * fallback; a refused insert is reported instead of silently dropped.
      */
-    private fun commitText(text: String): Boolean {
-        val connection = currentInputConnection ?: pendingConnection
+    private fun commitText(text: String): CommitOutcome {
+        val candidates = connectionCandidates()
         if (text.isBlank()) {
             // Empty results are common on silence; committing "" can clear a
             // selection, so only drop the provisional composing text.
-            clearComposing(connection)
-            return true
+            candidates.forEach { clearComposing(it) }
+            return CommitOutcome.EMPTY
         }
-        if (connection == null) {
+        if (candidates.isEmpty()) {
             Log.w(TAG, "No input connection for ${text.length} chars")
             toast(getString(R.string.ime_toast_no_field))
-            return false
+            return CommitOutcome.NO_FIELD
         }
-        val committed = runCatching { connection.commitText(text, 1) }
-            .onFailure { Log.w(TAG, "commitText failed", it) }
-            .getOrDefault(false)
-        if (committed) {
-            Log.i(TAG, "Committed ${text.length} chars")
-            return true
+        for (connection in candidates) {
+            val committed = runCatching { connection.commitText(text, 1) }
+                .onFailure { Log.w(TAG, "commitText failed on a connection", it) }
+                .getOrDefault(false)
+            if (!committed) continue
+            // If focus moved while transcribing, the old field may still show
+            // our underlined preview; the committed text replaced it only on
+            // the connection that accepted this insert.
+            candidates.filter { it !== connection }.forEach { clearComposing(it) }
+            Log.i(TAG, "Committed ${text.length} chars, state=$state")
+            return CommitOutcome.INSERTED
         }
         Log.w(TAG, "commitText refused ${text.length} chars")
         toast(getString(R.string.ime_toast_no_field))
-        return false
+        return CommitOutcome.NO_FIELD
     }
 
-    private fun clearComposing(
-        connection: InputConnection? = currentInputConnection ?: pendingConnection
-    ) {
+    /**
+     * The connection that should receive partials and the final text. The
+     * focused field is preferred so the insert lands where the user is now;
+     * the connection saved at stop is the fallback when no field is focused.
+     */
+    private fun connectionCandidates(): List<InputConnection> {
+        return listOfNotNull(currentInputConnection, pendingConnection).distinct()
+    }
+
+    private fun previewConnection(): InputConnection? = connectionCandidates().firstOrNull()
+
+    private fun clearComposing() {
+        connectionCandidates().forEach { clearComposing(it) }
+    }
+
+    private fun clearComposing(connection: InputConnection?) {
         runCatching { connection?.setComposingText("", 1) }
     }
 

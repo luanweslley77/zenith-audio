@@ -228,7 +228,7 @@ export class LiveSession {
     if (this.config.logTranscripts) {
       console.log(`[final] ${text}`);
     }
-    if (text.length > 0) {
+    if (this.config.logTranscripts && text.length > 0) {
       console.log(`[final] ${text.length} chars, ${durationMs} ms`);
     }
     this.sendJson(FrameType.RESULT, {
@@ -266,6 +266,12 @@ const LIVE_SEARCH_MS = 800;
 const LIVE_RMS_THRESHOLD = 0.01;
 /** Speech above the threshold needed before anything is sent to the model. */
 const MIN_SPEECH_MS = 100;
+/** The speech run must fit inside this window, so scattered clicks cannot add up. */
+const SPEECH_WINDOW_MS = 300;
+
+function frameSamples(sampleRate: number): number {
+  return Math.max(1, Math.floor(sampleRate * (LIVE_FRAME_MS / 1000)));
+}
 
 function frameRms(pcm: Buffer, sample: number, frameSamples: number): number {
   let sum = 0;
@@ -278,9 +284,11 @@ function frameRms(pcm: Buffer, sample: number, frameSamples: number): number {
 
 /**
  * Reports whether [startSample, endSample) contains at least [minSpeechMs] of
- * audio above the speech threshold. Short clicks and the noise floor do not
- * qualify; a hum that crosses the threshold continuously does, because RMS
- * alone cannot tell a voiced vowel from a strong tone.
+ * audio above the speech threshold inside a [SPEECH_WINDOW_MS] window. Short
+ * intra-word gaps are allowed, but isolated clicks and sporadic noise spread
+ * over a long clip cannot accumulate into a false positive. A hum that crosses
+ * the threshold continuously still qualifies, because RMS alone cannot tell a
+ * voiced vowel from a strong tone.
  */
 export function hasSpeech(
   pcm: Buffer,
@@ -289,21 +297,27 @@ export function hasSpeech(
   sampleRate: number,
   minSpeechMs: number = MIN_SPEECH_MS,
 ): boolean {
-  const frameSamples = Math.max(
-    1,
-    Math.floor(sampleRate * (LIVE_FRAME_MS / 1000)),
-  );
+  const samplesPerFrame = frameSamples(sampleRate);
   const requiredFrames = Math.max(1, Math.ceil(minSpeechMs / LIVE_FRAME_MS));
+  const windowFrames = Math.max(
+    requiredFrames,
+    Math.ceil(SPEECH_WINDOW_MS / LIVE_FRAME_MS),
+  );
+  const recent: number[] = [];
   let speechFrames = 0;
   for (
     let sample = startSample;
-    sample + frameSamples <= endSample;
-    sample += frameSamples
+    sample + samplesPerFrame <= endSample;
+    sample += samplesPerFrame
   ) {
-    if (frameRms(pcm, sample, frameSamples) >= LIVE_RMS_THRESHOLD) {
-      speechFrames += 1;
-      if (speechFrames >= requiredFrames) return true;
+    const speech =
+      frameRms(pcm, sample, samplesPerFrame) >= LIVE_RMS_THRESHOLD ? 1 : 0;
+    recent.push(speech);
+    speechFrames += speech;
+    if (recent.length > windowFrames) {
+      speechFrames -= recent.shift() ?? 0;
     }
+    if (speechFrames >= requiredFrames) return true;
   }
   return false;
 }
@@ -318,10 +332,7 @@ export function findSpeechStart(
   endSample: number,
   sampleRate: number,
 ): number {
-  const frameSamples = Math.max(
-    1,
-    Math.floor(sampleRate * (LIVE_FRAME_MS / 1000)),
-  );
+  const samplesPerFrame = frameSamples(sampleRate);
   const pauseFrames = Math.max(1, Math.round(LIVE_PAUSE_MS / LIVE_FRAME_MS));
   const searchSamples = Math.min(
     endSample - startSample,
@@ -332,13 +343,13 @@ export function findSpeechStart(
   let quietRun = 0;
   for (
     let sample = startSample;
-    sample + frameSamples <= searchEnd;
-    sample += frameSamples
+    sample + samplesPerFrame <= searchEnd;
+    sample += samplesPerFrame
   ) {
-    if (frameRms(pcm, sample, frameSamples) < LIVE_RMS_THRESHOLD) {
+    if (frameRms(pcm, sample, samplesPerFrame) < LIVE_RMS_THRESHOLD) {
       quietRun += 1;
       if (quietRun >= pauseFrames) {
-        return sample + frameSamples;
+        return sample + samplesPerFrame;
       }
     } else {
       quietRun = 0;

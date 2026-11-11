@@ -96,6 +96,44 @@ describe("speech gate", () => {
     expect(hasSpeech(pcm, 0, 4_800, 48_000)).toBe(true);
   });
 
+  test("a short gap inside a word is tolerated", () => {
+    const frame = 480;
+    const pcm = Buffer.alloc(frame * 2 * 20);
+    const writeSpeech = (from: number, frames: number): void => {
+      for (let i = from; i < (from + frames) * frame; i += 1) {
+        pcm.writeInt16LE(4_000, i * 2);
+      }
+    };
+    writeSpeech(0, 6);
+    // one silent 10 ms frame at index 6
+    writeSpeech(7, 6);
+    expect(hasSpeech(pcm, 0, pcm.length / 2, 48_000)).toBe(true);
+  });
+
+  test("fragmented weak speech still arms", () => {
+    const frame = 480;
+    const pcm = Buffer.alloc(frame * 2 * 40);
+    // Alternate 10 ms of speech and 10 ms of quiet for 200 ms: only half the
+    // frames are above the threshold, but the 100 ms minimum is met.
+    for (let click = 0; click < 10; click += 1) {
+      const start = click * frame * 2;
+      for (let i = 0; i < frame; i += 1) pcm.writeInt16LE(4_000, (start + i) * 2);
+    }
+    expect(hasSpeech(pcm, 0, pcm.length / 2, 48_000)).toBe(true);
+  });
+
+  test("scattered clicks do not accumulate into speech", () => {
+    const frame = 480;
+    const pcm = Buffer.alloc(frame * 2 * 200);
+    // Ten isolated 10 ms clicks: 100 ms of above-threshold audio in total,
+    // but never a continuous word.
+    for (let click = 0; click < 10; click += 1) {
+      const start = click * frame * 20;
+      for (let i = 0; i < frame; i += 1) pcm.writeInt16LE(4_000, (start + i) * 2);
+    }
+    expect(hasSpeech(pcm, 0, pcm.length / 2, 48_000)).toBe(false);
+  });
+
   test("rejects a quiet hum", () => {
     const samples = 4_800;
     const pcm = Buffer.alloc(samples * 2);
