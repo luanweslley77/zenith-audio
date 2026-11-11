@@ -24,9 +24,12 @@ import androidx.core.content.ContextCompat
 import com.zenith.audio.MainActivity
 import com.zenith.audio.R
 import com.zenith.audio.mic.MicAudioRecorder
+import com.zenith.audio.mic.MicSettings
 import com.zenith.audio.mic.MicSettingsStore
+import com.zenith.audio.service.AudioReceiverService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Voice keyboard. Hold the mic, speak, release: the PC transcribes and the
@@ -59,12 +62,18 @@ class ZenithImeService : InputMethodService() {
         Thread(runnable, "ZenithImeCapture").apply { isDaemon = true }
     }
 
+    /** True while the streaming service's mic is stopped for this dictation. */
+    private val streamingMicPaused = AtomicBoolean(false)
+
     @Volatile
     private var destroyed = false
 
     @Volatile
     private var client: DictationClient? = null
     private var recorder: MicAudioRecorder? = null
+
+    @Volatile
+    private var silenceDetector: SilenceDetector? = null
 
     /**
      * The connection that was focused when the user stopped recording. The
@@ -288,27 +297,41 @@ class ZenithImeService : InputMethodService() {
             // The session may have been cancelled while this task was queued.
             if (destroyed || client !== session) return@execute
 
+            // Both captures share one Android microphone; release the
+            // streaming one before opening a second AudioRecord.
+            streamingMicPaused.set(AudioReceiverService.pauseMicForDictation())
+
             // A fresh detector per session: the 2 s count starts with the
             // first spoken frame, not with capture.
             val silence = SilenceDetector()
+            silenceDetector = silence
             val capture = MicAudioRecorder(
                 context = this,
                 sendAudioPacket = { frame ->
                     session.enqueue(frame)
                     if (silence.onFrame(frame)) {
-                        mainHandler.post { autoStopFromSilence() }
+                        mainHandler.post { autoStopFromSilence(silence) }
                     }
                 },
                 sendControlPacket = {},
                 packetize = false
             )
-            capture.applySettings(MicSettingsStore.read(this), restartIfRecording = false)
+            // Dictation is held in the hand and should not inherit the
+            // streaming mic's negative gain or back-mic choice. Use the
+            // phone's default (bottom) mic and 0 dB for ASR.
+            val settings = MicSettingsStore.read(this).copy(
+                gainDb = MicSettings.DEFAULT_GAIN_DB,
+                inputDeviceId = MicSettings.DEFAULT_INPUT_DEVICE,
+                inputDeviceAddress = ""
+            )
+            capture.applySettings(settings, restartIfRecording = false)
             val started = capture.start()
 
             // Cancelled while AudioRecord was opening: close it right here,
             // on the capture thread, without opening the microphone again.
             if (destroyed || client !== session) {
                 capture.stop()
+                resumeStreamingMicIfPaused()
                 return@execute
             }
 
@@ -334,15 +357,30 @@ class ZenithImeService : InputMethodService() {
     }
 
     /** Called from the recorder thread's silence detector, then posted here. */
-    private fun autoStopFromSilence() {
+    private fun autoStopFromSilence(detector: SilenceDetector) {
+        Log.i(
+            TAG,
+            "Silence stop: captured=${detector.capturedDurationMs} ms, " +
+                "silent=${detector.silentDurationMs} ms, " +
+                "speechInWindow=${detector.speechInWindowDurationMs} ms, " +
+                "peak=${"%.4f".format(detector.peakLevel)}"
+        )
         if (state == State.RECORDING) {
-            Log.i(TAG, "Two seconds without speech; finishing dictation")
             finishRecording()
         }
     }
 
     private fun finishRecording() {
         if (state != State.RECORDING) return
+        silenceDetector?.let {
+            Log.i(
+                TAG,
+                "Finishing dictation: captured=${it.capturedDurationMs} ms, " +
+                    "silent=${it.silentDurationMs} ms, " +
+                    "speechInWindow=${it.speechInWindowDurationMs} ms, " +
+                    "peak=${"%.4f".format(it.peakLevel)}"
+            )
+        }
         mainHandler.removeCallbacks(maxDurationRunnable)
         val capture = recorder
         recorder = null
@@ -362,6 +400,7 @@ class ZenithImeService : InputMethodService() {
         // stop runs off the main thread; only then is END sent.
         captureExecutor.execute {
             capture.stop()
+            resumeStreamingMicIfPaused()
             mainHandler.post {
                 if (state == State.WAITING && client === session) {
                     session?.finish()
@@ -379,11 +418,23 @@ class ZenithImeService : InputMethodService() {
 
     private fun stopCapture(capture: MicAudioRecorder) {
         try {
-            captureExecutor.execute { capture.stop() }
+            captureExecutor.execute {
+                capture.stop()
+                resumeStreamingMicIfPaused()
+            }
         } catch (_: RejectedExecutionException) {
             // The service is being destroyed; release the device off the main
             // thread instead of blocking teardown.
-            Thread({ capture.stop() }, "ZenithImeCaptureRelease").start()
+            Thread({
+                capture.stop()
+                resumeStreamingMicIfPaused()
+            }, "ZenithImeCaptureRelease").start()
+        }
+    }
+
+    private fun resumeStreamingMicIfPaused() {
+        if (streamingMicPaused.compareAndSet(true, false)) {
+            AudioReceiverService.resumeMicAfterDictation()
         }
     }
 
@@ -406,6 +457,7 @@ class ZenithImeService : InputMethodService() {
         mainHandler.removeCallbacks(maxDurationRunnable)
         mainHandler.removeCallbacks(resultTimeoutRunnable)
         stopRecorder()
+        silenceDetector = null
         client?.cancel()
         client = null
         state = State.IDLE
@@ -426,6 +478,7 @@ class ZenithImeService : InputMethodService() {
         mainHandler.removeCallbacks(maxDurationRunnable)
         mainHandler.removeCallbacks(resultTimeoutRunnable)
         stopRecorder()
+        silenceDetector = null
         client?.cancel()
         client = null
         state = State.IDLE

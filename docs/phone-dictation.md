@@ -420,19 +420,39 @@ MicAudioRecorder(
     sendAudioPacket = { frame -> dictationClient.enqueue(frame) },
     sendControlPacket = { /* no-op: ZAP controls do not apply here */ },
     packetize = false
-).apply { applySettings(MicSettingsStore.read(this), restartIfRecording = false) }
+).apply {
+    applySettings(
+        MicSettingsStore.read(context).copy(
+            gainDb = MicSettings.DEFAULT_GAIN_DB,
+            inputDeviceId = MicSettings.DEFAULT_INPUT_DEVICE,
+            inputDeviceAddress = ""
+        ),
+        restartIfRecording = false
+    )
+}
 ```
 
-With `packetize = false` the recorder keeps its source mode, input device,
-80 Hz high-pass, gain and limiter, but hands over raw PCM16 frames and sends no
-ZAP control packets. That is what the TCP protocol expects; stripping a ZAP
+With `packetize = false` the recorder keeps its source mode, 80 Hz
+high-pass and limiter, but hands over raw PCM16 frames and sends no ZAP
+control packets. That is what the TCP protocol expects; stripping a ZAP
 header inside the IME would make it depend on a transport it does not use.
 
-`MicSettingsStore` is the shared reader for the `zenith_prefs` microphone keys,
-so the streaming service and the IME always apply the same source, device,
-gain and limiter. `start()` returns `false` when the device or permission is
-unavailable; the IME surfaces that and closes the connection instead of
-recording.
+Dictation deliberately does **not** inherit the streaming mic's chosen input
+device or gain. The streaming service may be set to the back mic with a
+negative gain for a particular PC setup; the IME is held in the hand and
+needs the phone's default (bottom) mic at 0 dB. It still reads the same
+`MicSettingsStore` for the source mode and limiter settings. `start()` returns
+`false` when the device or permission is unavailable; the IME surfaces that
+and closes the connection instead of recording.
+
+`AudioReceiverService` and the IME share one Android microphone. Before the
+IME opens its `AudioRecord`, it calls
+`AudioReceiverService.pauseMicForDictation()`, which stops the streaming
+capture; after the IME releases the mic it calls
+`AudioReceiverService.resumeMicAfterDictation()`. Without this hand-off,
+Android 11 on the Poco X3 can give the audio to only one of the two captures,
+so dictation receives fragments or silence. The resume is skipped if the user
+turned the streaming mic off or disconnected during the dictation.
 
 Opening and releasing `AudioRecord` can take tens to hundreds of milliseconds,
 so the IME runs them on a single capture executor, never on the main thread.
@@ -484,7 +504,7 @@ Idle ──tap──▶ Connecting ──ok──▶ Recording ──tap/2 s sil
 
 ### 5.7 Do not
 
-- Do not run the IME's capture while the Zenith mic service is also capturing, unless concurrent capture is verified on the device. Prefer to pause the service during dictation; Android 11 on the Poco X3 may give the audio to only one client.
+- Do not run the IME's capture while the Zenith mic service is also capturing. Android 11 on the Poco X3 may give the audio to only one client, so the IME pauses the streaming microphone for the duration of a dictation and resumes it afterwards.
 - Do not add a wakelock for dictation; the 2 s silence stop after speech and the 120 s session cap bound a forgotten tap-to-talk session.
 - Do not commit `""` (it can clear a selection); skip empty results.
 
@@ -749,7 +769,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 3. **Quality on the user's voice:** confirm the chosen `-30s` model against Whisper and stock v3 on the same recordings. The published `-plus` numbers are not a target; that checkpoint is not public.
 4. **GGUF conversion and Hex import:** resolved — the pt-BR fine-tune was converted (§16), imported as `custom-7d13a4fb474b2100`, checked on the RX 6500 XT via Vulkan, and transcribed the smoke samples correctly. Remaining: run it on the user's voice.
 5. **Live preview quality:** the pause heuristic (`findSpeechStart`, RMS < 0.01 for 100 ms) was tuned on clean 48 kHz audio. Test with the phone's noise floor and the chosen mic/Gain settings; lower the threshold or extend the pause search if previews start mid-word.
-6. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
+6. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. The IME already pauses the streaming mic; verify the streaming audio resumes after dictation and the IME log shows the bottom mic at 0 dB.
 7. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
 8. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt; verify that a forgotten tap-to-talk session stops 2 s after the last spoken word (and at the 120 s cap even if nothing was ever said).
 9. **On-device IME validation:** install the APK, enable "Zenith Voice", set the bridge port/token, and dictate into Notes, Chrome and WhatsApp. Items 5–8 are observed there; none of them can be proven by the JVM tests.
@@ -800,7 +820,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 - **Half-close after END is supported.** Node's default `allowHalfOpen: false` closes the bridge's write side as soon as the client's FIN arrives, which lost the RESULT; the bridge now keeps writing until it has replied, and treats a half-close without END as a cancel.
 - **Separate bridge process.** Isolates failures and keeps the C++ audio server untouched.
 - **Trigger decides destination.** No router, no synchronized selector.
-- **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; a `packetize = false` flag hands over raw PCM16 and skips ZAP controls instead of adding a second capture implementation.
+- **Reuse `MicAudioRecorder` in the IME.** Same source mode and limiter; a `packetize = false` flag hands over raw PCM16 and skips ZAP controls instead of adding a second capture implementation. Dictation overrides the streaming device/gain to the default bottom mic at 0 dB, and pauses the streaming capture while the IME owns the microphone.
 - **Dictation settings live in the app.** Port and token are edited in the main app's voice-keyboard card; the IME only opens it. Editable fields inside an IME window would need the IME to type into itself, and this IME deliberately has no QWERTY.
 - **Partials are composing text.** Every PARTIAL replaces the previous one with `setComposingText`; the RESULT replaces it with `commitText`. Cancel and errors clear the composing region so no provisional text is left behind.
 - **No speech, no inference.** The bridge checks every live window and the final clip for roughly 100 ms of speech above -40 dBFS RMS inside a 300 ms window, so short gaps in a word count and scattered clicks cannot accumulate. A quiet 120 Hz hum from a charger/fan reproduced the failure: the old code transcribed it and the model returned the same invented word ("ah") on every pass. Silent windows now yield no PARTIAL, and a silent session yields an empty RESULT.

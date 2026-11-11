@@ -39,6 +39,21 @@ class AudioReceiverService : Service() {
         private const val CHANNEL_ID = "zenith_audio_stream_channel"
         private const val NOTIFICATION_ID = 1001
         private const val TAG = "AudioReceiverService"
+
+        /**
+         * The IME and the streaming service share one Android microphone.
+         * Opening both at once makes one client receive little or no audio,
+         * so dictation pauses the streaming capture and resumes it after.
+         */
+        @Volatile
+        private var instance: AudioReceiverService? = null
+
+        fun pauseMicForDictation(): Boolean =
+            instance?.pauseMicForDictationInternal() ?: false
+
+        fun resumeMicAfterDictation() {
+            instance?.resumeMicAfterDictationInternal()
+        }
     }
 
     private val binder = LocalBinder()
@@ -53,6 +68,8 @@ class AudioReceiverService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var metricsCollectorJob: Job? = null
+    @Volatile
+    private var micPausedForDictation = false
 
     inner class LocalBinder : Binder() {
         fun getService(): AudioReceiverService = this@AudioReceiverService
@@ -62,6 +79,7 @@ class AudioReceiverService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         val startupMicSettings = readMicSettings()
         receiver = UdpAudioReceiver(this)
         micRecorder = com.zenith.audio.mic.MicAudioRecorder(
@@ -206,6 +224,7 @@ class AudioReceiverService : Service() {
 
     fun toggleMic(enable: Boolean): Boolean {
         val mic = micRecorder ?: return false
+        micPausedForDictation = false
         return if (enable) {
             mic.applySettings(readMicSettings(), restartIfRecording = false)
             mic.start()
@@ -213,6 +232,30 @@ class AudioReceiverService : Service() {
             mic.stop()
             true
         }
+    }
+
+    /**
+     * Releases the microphone before the IME opens its own AudioRecord. Runs
+     * on the IME capture executor; returns whether the streaming mic was on.
+     */
+    private fun pauseMicForDictationInternal(): Boolean {
+        val mic = micRecorder ?: return false
+        if (!mic.isRecording.value) return false
+        micPausedForDictation = true
+        mic.stop()
+        Log.i(TAG, "Microphone paused for IME dictation")
+        return true
+    }
+
+    /** Restarts the streaming mic after the IME releases the microphone. */
+    private fun resumeMicAfterDictationInternal() {
+        if (!micPausedForDictation) return
+        micPausedForDictation = false
+        val mic = micRecorder ?: return
+        if (mic.isRecording.value) return
+        mic.applySettings(readMicSettings(), restartIfRecording = false)
+        val started = mic.start()
+        Log.i(TAG, "Microphone resumed after IME dictation: $started")
     }
 
     fun getMicSettings(): MicSettings = micRecorder?.settings?.value ?: readMicSettings()
@@ -309,6 +352,7 @@ class AudioReceiverService : Service() {
     private fun stopStreaming() {
         metricsCollectorJob?.cancel()
         failoverManager?.setStreamingActive(false)
+        micPausedForDictation = false
         micRecorder?.stop()
 
         // Do not leave the PC muted after the phone stops listening.
@@ -322,6 +366,7 @@ class AudioReceiverService : Service() {
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
         stopStreaming()
         releaseWifiLock()
         serverDiscovery.stopDiscovery()

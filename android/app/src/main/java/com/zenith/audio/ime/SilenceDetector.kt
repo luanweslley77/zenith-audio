@@ -31,7 +31,9 @@ class SilenceDetector(
     private val speechWindow = ArrayDeque<EnergyFrame>()
     private var speechWindowMs = 0.0
     private var speechInWindowMs = 0.0
+    private var capturedMs = 0.0
     private var silentMs = 0.0
+    private var peakRms = 0.0
     private var heardSpeech = false
     private var triggered = false
 
@@ -50,6 +52,8 @@ class SilenceDetector(
         }
         val rms = sqrt(sumSquares / samples)
         val frameMs = samples * 1000.0 / sampleRate
+        capturedMs += frameMs
+        if (rms > peakRms) peakRms = rms
         val speech = rms >= threshold
 
         // Only above-threshold audio inside the last 300 ms counts. Short gaps
@@ -81,6 +85,10 @@ class SilenceDetector(
     }
 
     val silentDurationMs: Int get() = silentMs.toInt()
+    val capturedDurationMs: Int get() = capturedMs.toInt()
+    val speechInWindowDurationMs: Int get() = speechInWindowMs.toInt()
+    val hasHeardSpeech: Boolean get() = heardSpeech
+    val peakLevel: Float get() = peakRms.toFloat()
 
     companion object {
         /** -40 dBFS, matching the bridge's live-preview speech gate. */
