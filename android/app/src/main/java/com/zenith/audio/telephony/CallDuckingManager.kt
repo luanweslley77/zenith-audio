@@ -21,7 +21,11 @@ class CallDuckingManager(
         private const val DUCKED_VOLUME_PERCENT = 15 // Lower volume to 15% during phone call
     }
 
-    private val _isDuckingEnabled = MutableStateFlow(true)
+    private val prefs = context.getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
+
+    private val _isDuckingEnabled = MutableStateFlow(
+        prefs.getBoolean("call_ducking_enabled", true)
+    )
     val isDuckingEnabled: StateFlow<Boolean> = _isDuckingEnabled.asStateFlow()
 
     private val _isCallActive = MutableStateFlow(false)
@@ -90,6 +94,7 @@ class CallDuckingManager(
 
     fun setAutoDuckingEnabled(enabled: Boolean) {
         _isDuckingEnabled.value = enabled
+        prefs.edit().putBoolean("call_ducking_enabled", enabled).apply()
         if (!enabled && isDucked) {
             onSetVolume(preDuckVolume)
             onDuckingStateChanged(false)

@@ -60,8 +60,13 @@ class AoaDacManager(
         private const val TAG = "AoaDacManager"
     }
 
-    private val _isAoaEnabled = MutableStateFlow(false)
+    private val _isAoaEnabled = MutableStateFlow(
+        context.getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
+            .getBoolean("aoa_enabled", false)
+    )
     val isAoaEnabled: StateFlow<Boolean> = _isAoaEnabled.asStateFlow()
+
+    private val prefs = context.getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
 
     private val _isUsbConnected = MutableStateFlow(false)
     val isUsbConnected: StateFlow<Boolean> = _isUsbConnected.asStateFlow()
@@ -107,6 +112,10 @@ class AoaDacManager(
         } else {
             context.registerReceiver(usbReceiver, filter)
         }
+
+        if (_isAoaEnabled.value && usbManager?.accessoryList?.isNotEmpty() == true) {
+            onSwitchTransport(true, UsbIpResolver.resolveUsbHostIp())
+        }
     }
 
     fun stop() {
@@ -117,6 +126,7 @@ class AoaDacManager(
 
     fun setAoaModeEnabled(enabled: Boolean, fallbackWifiIp: String) {
         _isAoaEnabled.value = enabled
+        prefs.edit().putBoolean("aoa_enabled", enabled).apply()
         Log.i(TAG, "AOA 2.0 Hardware USB DAC mode toggled: $enabled")
 
         if (enabled) {

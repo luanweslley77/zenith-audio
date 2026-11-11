@@ -221,8 +221,15 @@ class MainActivity : ComponentActivity() {
         val initialIp = prefs.getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
         val initialDictationPort = DictationPrefs.port(this)
         val initialDictationToken = DictationPrefs.token(this)
+        val initialBitrate = prefs.getInt("bitrate_kbps", 320)
+            .takeIf { it in setOf(320, 256, 192, 128, 96, 64) } ?: 320
+        val initialAutoBitrate = prefs.getBoolean("auto_bitrate", false)
+        val initialVolume = prefs.getInt("master_volume", 100).coerceIn(0, 100)
         pcAudioEnabledState.value = prefs.getBoolean("pc_audio_enabled", true)
         phoneOnlyState.value = prefs.getBoolean("phone_only", false)
+        isGamingModeState.value = prefs.getBoolean("gaming_mode", true)
+        isCallDuckingEnabledState.value = prefs.getBoolean("call_ducking_enabled", true)
+        isAoaEnabledState.value = prefs.getBoolean("aoa_enabled", false)
 
         setContent {
             MaterialTheme(
@@ -258,6 +265,9 @@ class MainActivity : ComponentActivity() {
                         isUsbConnected = isUsbConnectedState.value,
                         pcAudioEnabled = pcAudioEnabledState.value,
                         phoneOnly = phoneOnlyState.value,
+                        initialBitrate = initialBitrate,
+                        initialAutoBitrate = initialAutoBitrate,
+                        initialVolume = initialVolume,
                         initialDictationPort = initialDictationPort,
                         initialDictationToken = initialDictationToken,
                         onConnect = { ip, bitrate ->
@@ -279,13 +289,16 @@ class MainActivity : ComponentActivity() {
                             stopStreamingService()
                         },
                         onBitrateChange = { bitrate ->
+                            prefs.edit().putInt("bitrate_kbps", bitrate).apply()
                             audioService?.setBitrate(bitrate)
                         },
                         onToggleAutoBitrate = { enabled ->
+                            prefs.edit().putBoolean("auto_bitrate", enabled).apply()
                             audioService?.setAutoBitrate(enabled)
                         },
                         onToggleGamingMode = { enabled ->
                             isGamingModeState.value = enabled
+                            prefs.edit().putBoolean("gaming_mode", enabled).apply()
                             audioService?.setGamingMode(enabled)
                         },
                         onTriggerAutoDetect = {
@@ -304,12 +317,17 @@ class MainActivity : ComponentActivity() {
                             audioService?.dspEngine?.setBandLevel(band, level)
                         },
                         onVolumeChange = { volumePercent ->
+                            prefs.edit().putInt("master_volume", volumePercent).apply()
                             audioService?.setMasterVolume(volumePercent)
                         },
                         onToggleCallDucking = { enabled ->
+                            isCallDuckingEnabledState.value = enabled
+                            prefs.edit().putBoolean("call_ducking_enabled", enabled).apply()
                             audioService?.setCallDuckingEnabled(enabled)
                         },
                         onToggleAoa = { enabled ->
+                            isAoaEnabledState.value = enabled
+                            prefs.edit().putBoolean("aoa_enabled", enabled).apply()
                             val currentIp = prefs.getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
                             audioService?.setAoaModeEnabled(enabled, currentIp)
                         },
@@ -451,6 +469,9 @@ fun ZenithAudioScreen(
     isUsbConnected: Boolean,
     pcAudioEnabled: Boolean,
     phoneOnly: Boolean,
+    initialBitrate: Int,
+    initialAutoBitrate: Boolean,
+    initialVolume: Int,
     initialDictationPort: Int,
     initialDictationToken: String,
     onConnect: (String, Int) -> Unit,
@@ -475,9 +496,9 @@ fun ZenithAudioScreen(
 ) {
     var serverIp by remember { mutableStateOf(initialIp) }
     var hasUserEditedIp by remember { mutableStateOf(false) }
-    var selectedBitrate by remember { mutableIntStateOf(320) }
-    var isAutoBitrate by remember { mutableStateOf(false) }
-    var volumeSlider by remember { mutableFloatStateOf(100f) }
+    var selectedBitrate by remember { mutableIntStateOf(initialBitrate) }
+    var isAutoBitrate by remember { mutableStateOf(initialAutoBitrate) }
+    var volumeSlider by remember { mutableFloatStateOf(initialVolume.toFloat()) }
 
     LaunchedEffect(activeDetectedIp) {
         // Fill the field automatically only when there is no saved address yet.
@@ -766,7 +787,7 @@ fun ZenithAudioScreen(
                         isAutoBitrate = false
                         onToggleAutoBitrate(false)
                         selectedBitrate = br
-                        if (isConnected) onBitrateChange(br)
+                        onBitrateChange(br)
                     },
                     label = {
                         Text(

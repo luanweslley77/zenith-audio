@@ -68,6 +68,7 @@ class AudioReceiverService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var metricsCollectorJob: Job? = null
+    private val prefs by lazy { getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE) }
     @Volatile
     private var micPausedForDictation = false
 
@@ -139,6 +140,12 @@ class AudioReceiverService : Service() {
             }
         }.apply { start() }
 
+        // Restore the settings that the service applies to the live receiver.
+        receiver?.setBitrate(prefs.getInt("bitrate_kbps", 320))
+        receiver?.setAutoBitrate(prefs.getBoolean("auto_bitrate", false))
+        receiver?.setGamingMode(prefs.getBoolean("gaming_mode", true))
+        setMasterVolume(prefs.getInt("master_volume", 100))
+
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ZenithAudio::StreamWakeLock")
         wakeLock?.acquire(12 * 60 * 60 * 1000L) // 12 hours max
@@ -187,14 +194,17 @@ class AudioReceiverService : Service() {
 
     fun setBitrate(bitrateKbps: Int) {
         receiver?.setBitrate(bitrateKbps)
+        prefs.edit().putInt("bitrate_kbps", bitrateKbps).apply()
     }
 
     fun setAutoBitrate(enabled: Boolean) {
         receiver?.setAutoBitrate(enabled)
+        prefs.edit().putBoolean("auto_bitrate", enabled).apply()
     }
 
     fun setGamingMode(enabled: Boolean) {
         receiver?.setGamingMode(enabled)
+        prefs.edit().putBoolean("gaming_mode", enabled).apply()
     }
 
     fun triggerFastDiscovery() {
@@ -204,6 +214,7 @@ class AudioReceiverService : Service() {
     fun setMasterVolume(volumePercent: Int) {
         callDuckingManager?.updateCurrentVolume(volumePercent)
         receiver?.setMasterVolume(volumePercent)
+        prefs.edit().putInt("master_volume", volumePercent.coerceIn(0, 100)).apply()
     }
 
     fun setPcAudioEnabled(enabled: Boolean) {
@@ -314,6 +325,7 @@ class AudioReceiverService : Service() {
         if (started) {
             // Send the current routing state to the server after the socket is up.
             receiver?.setPcAudioEnabled(pcAudioEnabled)
+            receiver?.setMasterVolume(prefs.getInt("master_volume", 100))
             if (phoneOnly) {
                 // Do not send an unmute when phone-only is off: the PC may have
                 // been muted manually and the app should not override that.
