@@ -472,7 +472,7 @@ Idle ──tap──▶ Connecting ──ok──▶ Recording ──tap/2 s sil
 ```
 
 - **Tap to toggle.** The mic button is not a hold gesture: tap starts, the next tap stops and transcribes. This is also the only path assistive technologies need.
-- **Silence auto-stop.** The IME computes RMS per captured frame (10 ms, threshold 0.01 normalized, -40 dBFS). After **2 s** below the threshold it stops the capture and sends `END`, exactly as if the user had tapped stop. The detector is created per session and fires once.
+- **Silence auto-stop.** The IME computes RMS per captured frame (10 ms, threshold 0.01 normalized, -40 dBFS). Once the user has spoken at least one frame above the threshold, **2 s** below it stops the capture and sends `END`, exactly as if the user had tapped stop. Silence before the first spoken frame never stops: a tap-to-talk session that has not started speaking yet stays open. The detector is created per session and fires once.
 - **Cancel** (button, hiding the keyboard with Back or an IME switch, screen off): stop capture, close the socket without `END`, return to `Idle`. Hiding the input view calls `onFinishInputView`; a temporarily hidden window calls `onWindowHidden`; both cancel **while capturing** (CONNECTING/RECORDING). A session already in WAITING is left to finish, so a transient hide does not discard an utterance that is already being transcribed. Relying only on `onFinishInput` would leave the microphone on when the keyboard is merely hidden.
 - **Timeout**: 120 s waiting for the result, then show an error and close.
 - **Permission missing**: open the main activity to request `RECORD_AUDIO` (same app, so a grant covers the IME too).
@@ -481,7 +481,7 @@ Idle ──tap──▶ Connecting ──ok──▶ Recording ──tap/2 s sil
 ### 5.7 Do not
 
 - Do not run the IME's capture while the Zenith mic service is also capturing, unless concurrent capture is verified on the device. Prefer to pause the service during dictation; Android 11 on the Poco X3 may give the audio to only one client.
-- Do not add a wakelock for dictation; the 2 s silence stop bounds a forgotten tap-to-talk session.
+- Do not add a wakelock for dictation; the 2 s silence stop after speech and the 120 s session cap bound a forgotten tap-to-talk session.
 - Do not commit `""` (it can clear a selection); skip empty results.
 
 ### 5.8 Build and enable
@@ -746,7 +746,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 5. **Live preview quality:** the pause heuristic (`findSpeechStart`, RMS < 0.01 for 100 ms) was tuned on clean 48 kHz audio. Test with the phone's noise floor and the chosen mic/Gain settings; lower the threshold or extend the pause search if previews start mid-word.
 6. **Concurrent capture:** IME + `AudioReceiverService` at the same time on the Poco X3/MIUI. If only one wins, pause the service during dictation.
 7. **KDE paste (Phase 0 only):** Hex uses the RemoteDesktop portal on KWin. Confirm it works on this Fedora version.
-8. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt; verify that a forgotten tap-to-talk session stops after 2 s of silence.
+8. **MIUI battery restrictions:** the IME is foreground while visible, so it should be exempt; verify that a forgotten tap-to-talk session stops 2 s after the last spoken word (and at the 120 s cap even if nothing was ever said).
 9. **On-device IME validation:** install the APK, enable "Zenith Voice", set the bridge port/token, and dictate into Notes, Chrome and WhatsApp. Items 5–8 are observed there; none of them can be proven by the JVM tests.
 10. **Silence threshold:** the auto-stop uses RMS < 0.01 (-40 dBFS), the same order as the bridge's pause heuristic. Test it with the phone's noise floor and the chosen mic/gain; lower it if a noisy room keeps the session alive, raise it if normal pauses trigger too early.
 
@@ -798,7 +798,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 - **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; a `packetize = false` flag hands over raw PCM16 and skips ZAP controls instead of adding a second capture implementation.
 - **Dictation settings live in the app.** Port and token are edited in the main app's voice-keyboard card; the IME only opens it. Editable fields inside an IME window would need the IME to type into itself, and this IME deliberately has no QWERTY.
 - **Partials are composing text.** Every PARTIAL replaces the previous one with `setComposingText`; the RESULT replaces it with `commitText`. Cancel and errors clear the composing region so no provisional text is left behind.
-- **Tap to toggle, with a local silence stop.** The mic is not a hold gesture: the first tap starts and the next tap stops. A `SilenceDetector` on the recorder thread ends the session after 2 s of RMS below -40 dBFS, so a forgotten session cannot keep the microphone open. The detector runs on the phone, not the bridge: no protocol change, and it also works if the bridge is slow.
+- **Tap to toggle, with a local silence stop.** The mic is not a hold gesture: the first tap starts and the next tap stops. A `SilenceDetector` on the recorder thread ends the session after 2 s of RMS below -40 dBFS *once speech has been heard*; silence before the first word never stops the session. The detector runs on the phone, not the bridge: no protocol change, and it also works if the bridge is slow.
 - **The app owns the endpoint.** `NetworkFailoverManager` tracks the active PC address and `AudioReceiverService` publishes it to `active_server_ip`; the IME reads that single value (falling back to `server_ip`). The IME never probes, scans or tries a list of networks — it only opens the connection to the server the app is currently using.
 - **The bridge runs as a systemd user service.** `zenith-dictation.service` starts Bun, which starts `hex service --embedded`; it restarts on failure and starts at login (or without login when linger is enabled). The token comes from a private environment file, not the unit.
 - **Hiding the IME ends the session.** `onFinishInput` alone is not enough: Back and keyboard switches hide the input view without finishing input. `onFinishInputView` and `onWindowHidden` also cancel while the microphone is live, so it is never left running without a visible keyboard; WAITING is exempt so a transient hide does not throw away an in-flight transcript.

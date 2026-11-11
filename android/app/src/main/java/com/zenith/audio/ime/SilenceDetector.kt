@@ -4,7 +4,12 @@ import kotlin.math.sqrt
 
 /**
  * Watches captured PCM16 frames and reports when the speaker has been silent
- * for [silenceMs]. The IME uses it to end a tap-to-talk session automatically.
+ * for [silenceMs] after having spoken something. The IME uses it to end a
+ * tap-to-talk session automatically.
+ *
+ * The silence clock only starts once a frame above the threshold has been
+ * seen: opening the microphone and saying nothing must not stop the session,
+ * because the user may simply need a moment before the first word.
  *
  * The detector runs on the recorder thread. [onFrame] returns true exactly
  * once per session when the silence limit is reached, so the caller can post a
@@ -20,6 +25,7 @@ class SilenceDetector(
     private val silenceMs: Int = DEFAULT_SILENCE_MS
 ) {
     private var silentMs = 0.0
+    private var heardSpeech = false
     private var triggered = false
 
     fun onFrame(pcm16: ByteArray, size: Int = pcm16.size): Boolean {
@@ -38,9 +44,13 @@ class SilenceDetector(
         val rms = sqrt(sumSquares / samples)
 
         if (rms >= threshold) {
+            heardSpeech = true
             silentMs = 0.0
             return false
         }
+
+        // Nothing has been said yet: keep waiting instead of counting silence.
+        if (!heardSpeech) return false
 
         silentMs += samples * 1000.0 / sampleRate
         if (silentMs >= silenceMs) {

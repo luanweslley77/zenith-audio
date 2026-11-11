@@ -249,7 +249,8 @@ class ZenithImeService : InputMethodService() {
             // The session may have been cancelled while this task was queued.
             if (destroyed || client !== session) return@execute
 
-            // A fresh detector per session: the 2 s count starts with capture.
+            // A fresh detector per session: the 2 s count starts with the
+            // first spoken frame, not with capture.
             val silence = SilenceDetector()
             val capture = MicAudioRecorder(
                 context = this,
