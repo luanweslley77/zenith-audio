@@ -42,6 +42,15 @@ function startFrame(): Buffer {
   });
 }
 
+/** 100 ms of 48 kHz mono PCM16 above the bridge's speech threshold. */
+function speechAudio(): Buffer {
+  const pcm = Buffer.alloc(9600);
+  for (let i = 0; i + 1 < pcm.length; i += 2) {
+    pcm.writeInt16LE(4_000, i);
+  }
+  return pcm;
+}
+
 describe("bridge socket lifecycle", () => {
   test("returns RESULT after the client half-closes on END", async () => {
     const { server, port } = await startBridge();
@@ -49,7 +58,7 @@ describe("bridge socket lifecycle", () => {
       const text = await new Promise<string>((resolve, reject) => {
         const socket = net.connect({ host: "127.0.0.1", port }, () => {
           socket.write(startFrame());
-          socket.write(encodeFrame(FrameType.AUDIO, Buffer.alloc(960)));
+          socket.write(encodeFrame(FrameType.AUDIO, speechAudio()));
           socket.write(encodeFrame(FrameType.END));
           // The Android client half-closes after END and still waits for
           // RESULT on the readable side.
@@ -96,7 +105,7 @@ describe("bridge socket lifecycle", () => {
       const text = await new Promise<string>((resolve, reject) => {
         const socket = net.connect({ host: "127.0.0.1", port }, () => {
           socket.write(startFrame());
-          socket.write(encodeFrame(FrameType.AUDIO, Buffer.alloc(960)));
+          socket.write(encodeFrame(FrameType.AUDIO, speechAudio()));
           socket.write(encodeFrame(FrameType.END));
           socket.end();
         });

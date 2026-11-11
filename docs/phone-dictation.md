@@ -355,6 +355,7 @@ server → RESULT or ERROR, then closes
 ```
 
 - Partials are **tentative**: the client replaces the previous PARTIAL and commits only the final RESULT. It must never append partials to the field.
+- A live window or the final clip is only sent to the model when it contains at least **100 ms** of audio above the speech threshold (-40 dBFS RMS). Silent windows produce no PARTIAL; a fully silent session returns an empty RESULT. This is what keeps hum and the mic noise floor from becoming a repeated hallucinated word.
 - The final RESULT always transcribes the **whole utterance**, not just the last chunk, so partials cannot lose or duplicate words.
 - The bridge ignores `AUDIO` after `END`.
 - The client must not send a second `START` on the same connection.
@@ -551,8 +552,8 @@ Reasons: Bun is already installed; the official Hex SDK is TypeScript/ESM-only; 
 1. Accept TCP connections on `0.0.0.0:59102` (configurable); one active dictation at a time.
 2. Parse frames, validate `DICTATION_START`.
 3. Buffer audio up to `maxSeconds` (default 120 s) and `maxBytes` (default 16 MiB).
-4. When the session is live, re-transcribe the tail at `liveStrideMs`/`liveWindowMs` and send `PARTIAL`; the final pass is always the whole utterance.
-5. On `END`, build a WAV of the whole utterance and return `RESULT`/`ERROR`.
+4. When the session is live, re-transcribe the tail at `liveStrideMs`/`liveWindowMs` and send `PARTIAL`; the final pass is always the whole utterance. Windows with no speech are skipped.
+5. On `END`, build a WAV of the whole utterance and return `RESULT`/`ERROR`; a clip with no speech returns an empty `RESULT` without inference.
 6. Keep Hex's model resident across sessions; serialize inference (one pass at a time).
 7. Close the connection.
 
@@ -617,8 +618,9 @@ The bridge does not wait for Hex #1136/#1470. It implements the #1470 idea on to
 - keep the **whole** utterance buffer;
 - every `liveStrideMs` of new audio, transcribe the last `liveWindowMs`;
 - start the window after a short pause when one exists (`findSpeechStart`), so a preview rarely begins mid-word;
+- require at least 100 ms above the -40 dBFS RMS threshold in that window before calling the model, so hum and the noise floor never become a PARTIAL;
 - send a `PARTIAL` with the text; the client **replaces** the previous preview;
-- at `END`, transcribe the **whole utterance** and send `RESULT`.
+- at `END`, transcribe the **whole utterance** and send `RESULT`; a fully silent session returns an empty `RESULT` without inference.
 
 Why the tail instead of fixed chunks:
 
@@ -639,7 +641,7 @@ The implementation lives in `bridge/` (Bun + `@kitlangton/hex`):
 - `src/server.ts`: TCP frames and one active dictation;
 - `src/live-test.ts`: end-to-end client that prints every PARTIAL and the final RESULT.
 
-Validated on a 14.2 s FLEURS clip: 17 partials, final text exactly the reference. `bun test` covers the frame codec, WAV container, live scheduler, cancellation and the audio cap; `bun run typecheck` is clean.
+Validated on a 14.2 s FLEURS clip: 17 partials, final text exactly the reference. `bun test` covers the frame codec, WAV container, live scheduler, speech gate, cancellation and the audio cap; `bun run typecheck` is clean.
 
 Decision record: [ADR 0001](adr/0001-live-text-in-the-bridge.md) explains why this live layer is outside Hex, its costs, and the criteria for moving it into Hex or replacing it with a native streaming model.
 
@@ -798,6 +800,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 - **Reuse `MicAudioRecorder` in the IME.** Same source, device, gain and limiter; a `packetize = false` flag hands over raw PCM16 and skips ZAP controls instead of adding a second capture implementation.
 - **Dictation settings live in the app.** Port and token are edited in the main app's voice-keyboard card; the IME only opens it. Editable fields inside an IME window would need the IME to type into itself, and this IME deliberately has no QWERTY.
 - **Partials are composing text.** Every PARTIAL replaces the previous one with `setComposingText`; the RESULT replaces it with `commitText`. Cancel and errors clear the composing region so no provisional text is left behind.
+- **No speech, no inference.** The bridge checks every live window and the final clip for at least 100 ms above -40 dBFS RMS before calling Hex. A quiet 120 Hz hum from a charger/fan reproduced the failure: the old code transcribed it and the model returned the same invented word ("ah") on every pass. Silent windows now yield no PARTIAL, and a silent session yields an empty RESULT.
 - **Tap to toggle, with a local silence stop.** The mic is not a hold gesture: the first tap starts and the next tap stops. A `SilenceDetector` on the recorder thread ends the session after 2 s of RMS below -40 dBFS *once speech has been heard*; silence before the first word never stops the session. The detector runs on the phone, not the bridge: no protocol change, and it also works if the bridge is slow.
 - **The app owns the endpoint.** `NetworkFailoverManager` tracks the active PC address and `AudioReceiverService` publishes it to `active_server_ip`; the IME reads that single value (falling back to `server_ip`). The IME never probes, scans or tries a list of networks — it only opens the connection to the server the app is currently using.
 - **The bridge runs as a systemd user service.** `zenith-dictation.service` starts Bun, which starts `hex service --embedded`; it restarts on failure and starts at login (or without login when linger is enabled). The token comes from a private environment file, not the unit.

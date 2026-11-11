@@ -11,6 +11,12 @@ The final pass always transcribes the **entire** utterance, so partials are
 tentative: the client replaces them and commits only the final text. This
 avoids the word-loss risk of cutting the audio into fixed chunks.
 
+Every window and every final clip is checked for speech first. If nothing has
+crossed the -40 dBFS RMS threshold for at least 100 ms, the bridge does not
+call the model and returns an empty RESULT. Without that gate, low-level hum
+and the phone's noise floor were sent to the model, which answered with the
+same made-up word ("ah") on every pass even though nobody had spoken.
+
 ## Prerequisites
 
 - Hex built from source (or installed) and a model available to it. The bridge

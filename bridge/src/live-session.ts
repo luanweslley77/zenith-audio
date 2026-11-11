@@ -93,7 +93,13 @@ export class LiveSession {
       if (this.closed) return;
 
       const pcm = this.fullPcm();
-      if (pcm.length === 0) {
+      if (
+        pcm.length === 0 ||
+        !hasSpeech(pcm, 0, pcm.length / 2, this.config.sampleRate)
+      ) {
+        // Nothing above the speech threshold was ever captured. Sending this
+        // to the model risks a hallucinated word; a silent session must yield
+        // an empty result instead.
         this.sendResult("", 0, 0);
         this.close();
         return;
@@ -156,6 +162,11 @@ export class LiveSession {
       this.config.sampleRate,
     );
     this.lastPassEnd = end;
+    // Hum, fan noise and the phone's noise floor are not speech, but an ASR
+    // model asked to transcribe them can emit the same made-up word every
+    // time ("ah", "obrigado"). Only run a preview when the slice actually
+    // carries speech.
+    if (!hasSpeech(full, speechStart, end, this.config.sampleRate)) return;
     const pass = ++this.pass;
     const pcm = full.subarray(speechStart * 2, end * 2);
     const wav = pcm16ToWav(pcm, this.config.sampleRate, this.config.channels);
@@ -246,6 +257,49 @@ const LIVE_FRAME_MS = 10;
 const LIVE_PAUSE_MS = 100;
 const LIVE_SEARCH_MS = 800;
 const LIVE_RMS_THRESHOLD = 0.01;
+/** Speech above the threshold needed before anything is sent to the model. */
+const MIN_SPEECH_MS = 100;
+
+function frameRms(pcm: Buffer, sample: number, frameSamples: number): number {
+  let sum = 0;
+  for (let i = 0; i < frameSamples; i += 1) {
+    const value = pcm.readInt16LE((sample + i) * 2) / 32768;
+    sum += value * value;
+  }
+  return Math.sqrt(sum / frameSamples);
+}
+
+/**
+ * Reports whether [startSample, endSample) contains at least [minSpeechMs] of
+ * audio above the speech threshold. Short clicks and the noise floor do not
+ * qualify; a hum that crosses the threshold continuously does, because RMS
+ * alone cannot tell a voiced vowel from a strong tone.
+ */
+export function hasSpeech(
+  pcm: Buffer,
+  startSample: number,
+  endSample: number,
+  sampleRate: number,
+  minSpeechMs: number = MIN_SPEECH_MS,
+): boolean {
+  const frameSamples = Math.max(
+    1,
+    Math.floor(sampleRate * (LIVE_FRAME_MS / 1000)),
+  );
+  const requiredFrames = Math.max(1, Math.ceil(minSpeechMs / LIVE_FRAME_MS));
+  let speechFrames = 0;
+  for (
+    let sample = startSample;
+    sample + frameSamples <= endSample;
+    sample += frameSamples
+  ) {
+    if (frameRms(pcm, sample, frameSamples) >= LIVE_RMS_THRESHOLD) {
+      speechFrames += 1;
+      if (speechFrames >= requiredFrames) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Starts the live window after a short pause when one exists, so a partial
@@ -274,13 +328,7 @@ export function findSpeechStart(
     sample + frameSamples <= searchEnd;
     sample += frameSamples
   ) {
-    let sum = 0;
-    for (let i = 0; i < frameSamples; i += 1) {
-      const value = pcm.readInt16LE((sample + i) * 2) / 32768;
-      sum += value * value;
-    }
-    const rms = Math.sqrt(sum / frameSamples);
-    if (rms < LIVE_RMS_THRESHOLD) {
+    if (frameRms(pcm, sample, frameSamples) < LIVE_RMS_THRESHOLD) {
       quietRun += 1;
       if (quietRun >= pauseFrames) {
         return sample + frameSamples;
