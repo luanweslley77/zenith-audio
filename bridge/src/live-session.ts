@@ -100,6 +100,10 @@ export class LiveSession {
         // Nothing above the speech threshold was ever captured. Sending this
         // to the model risks a hallucinated word; a silent session must yield
         // an empty result instead.
+        const durationMs = Math.round(
+          (pcm.length / 2 / this.config.sampleRate) * 1000,
+        );
+        console.log(`[final] no speech in ${durationMs} ms; returning empty`);
         this.sendResult("", 0, 0);
         this.close();
         return;
@@ -223,6 +227,9 @@ export class LiveSession {
     if (this.closed) return;
     if (this.config.logTranscripts) {
       console.log(`[final] ${text}`);
+    }
+    if (text.length > 0) {
+      console.log(`[final] ${text.length} chars, ${durationMs} ms`);
     }
     this.sendJson(FrameType.RESULT, {
       version: 1,
