@@ -34,3 +34,8 @@ scratch/
 test/build/
 test/bin/
 test/gradle-test/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
