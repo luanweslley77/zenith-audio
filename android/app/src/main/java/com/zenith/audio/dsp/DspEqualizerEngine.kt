@@ -100,13 +100,10 @@ class DspEqualizerEngine(private val context: Context) {
             _bands.value = bandList
             _bandLevels.value = currentLevels
 
-            // A saved band curve is the user's real state. Materialize the
-            // preset for bands never touched, then overlay every saved band
-            // and the saved bass value.
-            if (savedLevels.isEmpty()) {
-                applyPresetInternal(_currentPreset.value, savePref = false)
-            } else {
-                applyPresetInternal(_currentPreset.value, savePref = false)
+            // Materialize the preset for bands never touched, overlay every
+            // saved band, then restore the saved bass value.
+            applyPresetInternal(_currentPreset.value, savePref = false)
+            if (savedLevels.isNotEmpty()) {
                 val merged = _bandLevels.value.toMutableMap()
                 for ((band, level) in savedLevels) {
                     try {
@@ -115,11 +112,10 @@ class DspEqualizerEngine(private val context: Context) {
                     merged[band] = level
                 }
                 _bandLevels.value = merged
-                if (prefs.contains(KEY_BASS_BOOST)) {
-                    // applyPresetInternal already overwrote _bassStrength with
-                    // the preset default; read the user's saved value instead.
-                    setBassBoost(prefs.getInt(KEY_BASS_BOOST, _bassStrength.value), persist = false)
-                }
+            }
+            if (prefs.contains(KEY_BASS_BOOST)) {
+                // The preset just overwrote _bassStrength; read the saved value.
+                setBassBoost(prefs.getInt(KEY_BASS_BOOST, _bassStrength.value), persist = false)
             }
 
             Log.i(TAG, "Hardware DSP attached to session $audioSessionId with $numBands bands")

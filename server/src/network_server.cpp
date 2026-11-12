@@ -11,6 +11,7 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <chrono>
+#include <algorithm>
 #include <deque>
 #include <condition_variable>
 #include <mutex>
@@ -41,6 +42,19 @@ public:
     void enqueue(std::string command) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) return;
+            // Keep only the latest value for each independent state command.
+            const char *marker = command.find("set-volume") != std::string::npos
+                                     ? "set-volume"
+                                     : (command.find("set-mute") != std::string::npos ? "set-mute" : nullptr);
+            if (marker != nullptr) {
+                queue_.erase(
+                    std::remove_if(queue_.begin(), queue_.end(),
+                                   [marker](const std::string &queued) {
+                                       return queued.find(marker) != std::string::npos;
+                                   }),
+                    queue_.end());
+            }
             if (queue_.size() >= kMaxQueued) {
                 queue_.pop_front();
             }

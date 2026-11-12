@@ -93,7 +93,7 @@ class AoaDacManager(
                                 val usbIp = UsbIpResolver.resolveUsbHostIp()
                                 onSwitchTransport(true, usbIp)
                             }
-                        }
+                        }.onFailure { Log.w(TAG, "AOA attach switch failed", it) }
                     }
                 }
                 UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
@@ -101,6 +101,7 @@ class AoaDacManager(
                     _isUsbConnected.value = false
                     if (_isAoaEnabled.value) {
                         runCatching { ioExecutor.execute { onSwitchTransport(false, "") } }
+                            .onFailure { Log.w(TAG, "AOA detach switch failed", it) }
                     }
                 }
             }
@@ -126,7 +127,7 @@ class AoaDacManager(
                 ioExecutor.execute {
                     onSwitchTransport(true, UsbIpResolver.resolveUsbHostIp())
                 }
-            }
+            }.onFailure { Log.w(TAG, "AOA start switch failed", it) }
         }
     }
 
@@ -154,10 +155,11 @@ class AoaDacManager(
                     Log.i(TAG, "AOA USB DAC enabled -> Routing to USB host $usbIp")
                     onSwitchTransport(true, usbIp)
                 }
-            }
+            }.onFailure { Log.w(TAG, "AOA enable switch failed", it) }
         } else {
             Log.i(TAG, "AOA USB DAC disabled -> Restoring Wi-Fi to $fallbackWifiIp")
             runCatching { ioExecutor.execute { onSwitchTransport(false, fallbackWifiIp) } }
+                .onFailure { Log.w(TAG, "AOA disable switch failed", it) }
         }
     }
 }
