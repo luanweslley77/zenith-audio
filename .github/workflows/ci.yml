@@ -44,7 +44,8 @@ jobs:
           mkdir -p /tmp/deb_build/${PKG}/usr/bin
           mkdir -p /tmp/deb_build/${PKG}/usr/lib/systemd/user
           cp server/bin/zenith-server /tmp/deb_build/${PKG}/usr/bin/zenith-server
-          cp scripts/zenith-server.service /tmp/deb_build/${PKG}/usr/lib/systemd/user/zenith-server.service
+          sed 's|^ExecStart=.*|ExecStart=/usr/bin/zenith-server --port 59100 --bitrate 320|' \
+            scripts/zenith-server.service > /tmp/deb_build/${PKG}/usr/lib/systemd/user/zenith-server.service
           strip /tmp/deb_build/${PKG}/usr/bin/zenith-server
           cat << EOF > /tmp/deb_build/${PKG}/DEBIAN/control
           Package: zenith-audio-server
@@ -81,6 +82,15 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
 
       - name: Build and Test Android APK
         run: |

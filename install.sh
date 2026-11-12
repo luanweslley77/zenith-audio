@@ -82,7 +82,10 @@ install -m 755 scripts/zenith-usb-mode.sh "$HOME/.local/bin/zenith-usb-mode.sh"
 # Add ~/.local/bin to PATH once per rc file
 add_path_line() {
     local rc="$1"
-    [ -e "$rc" ] || touch "$rc"
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) return 0 ;;
+    esac
+    [ -e "$rc" ] || return 0
     if ! grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$rc"; then
         echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rc"
     fi
@@ -96,7 +99,11 @@ echo -e "\n${YELLOW}[4/4] Setting up systemd background service...${NC}"
 SERVICE_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SERVICE_DIR"
 
-install -m 644 "$(dirname "$0")/scripts/zenith-server.service" "$SERVICE_DIR/zenith-server.service"
+if [ -f scripts/zenith-server.service ]; then
+    install -m 644 scripts/zenith-server.service "$SERVICE_DIR/zenith-server.service"
+else
+    echo -e "${RED}[✗] scripts/zenith-server.service not found; the service was not installed.${NC}"
+fi
 
 systemctl --user daemon-reload || true
 if systemctl --user enable zenith-server.service && systemctl --user restart zenith-server.service; then
@@ -125,7 +132,7 @@ else
 fi
 
 # Default-route source is reachable by the phone; interface listing is not.
-WIFI_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+WIFI_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}')
 WIFI_IP=${WIFI_IP:-Not detected}
 echo -e "Active Host IP:  ${BOLD}${CYAN}$WIFI_IP${NC}"
 echo -e "Port:            ${BOLD}59100 (UDP)${NC}"

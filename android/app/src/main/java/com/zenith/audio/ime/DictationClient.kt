@@ -169,33 +169,33 @@ class DictationClient(
                 return
             }
             for (frame in frames) {
-                try {
-                    when (frame.type) {
-                        DictationProtocol.FrameType.PARTIAL -> {
+                when (frame.type) {
+                    DictationProtocol.FrameType.PARTIAL -> {
+                        try {
                             listener.onPartial(DictationProtocol.parsePartial(frame.payload).text)
+                        } catch (e: Exception) {
+                            // A malformed preview must not abort a dictation
+                            // that is still producing usable audio.
+                            Log.w(TAG, "Ignoring malformed PARTIAL", e)
                         }
-                        DictationProtocol.FrameType.RESULT -> {
-                            val result = DictationProtocol.parseResult(frame.payload)
-                            if (reported.compareAndSet(false, true)) {
-                                listener.onResult(result.text)
-                            }
-                            running.set(false)
-                            return
-                        }
-                        DictationProtocol.FrameType.ERROR -> {
-                            val failure = DictationProtocol.parseFailure(frame.payload)
-                            if (reported.compareAndSet(false, true)) {
-                                listener.onError(failure.code, failure.message)
-                            }
-                            running.set(false)
-                            return
-                        }
-                        else -> Log.w(TAG, "Ignoring frame type 0x${frame.type.toString(16)}")
                     }
-                } catch (e: Exception) {
-                    // A malformed preview must not abort a dictation that is
-                    // still producing usable audio.
-                    Log.w(TAG, "Ignoring malformed frame type 0x${frame.type.toString(16)}", e)
+                    DictationProtocol.FrameType.RESULT -> {
+                        val result = DictationProtocol.parseResult(frame.payload)
+                        if (reported.compareAndSet(false, true)) {
+                            listener.onResult(result.text)
+                        }
+                        running.set(false)
+                        return
+                    }
+                    DictationProtocol.FrameType.ERROR -> {
+                        val failure = DictationProtocol.parseFailure(frame.payload)
+                        if (reported.compareAndSet(false, true)) {
+                            listener.onError(failure.code, failure.message)
+                        }
+                        running.set(false)
+                        return
+                    }
+                    else -> Log.w(TAG, "Ignoring frame type 0x${frame.type.toString(16)}")
                 }
             }
         }

@@ -28,6 +28,7 @@ class ZenithControlApp(Gtk.Window):
         self._syncing_volume = False
         self._pending_volume = 100
         self._volume_timeout = None
+        self._volume_user_until = 0.0
 
         # Apply Dark Theme CSS
         css_provider = Gtk.CssProvider()
@@ -159,18 +160,28 @@ class ZenithControlApp(Gtk.Window):
         vol = int(scale.get_value())
         self.vol_pct_lbl.set_text(f"{vol}%")
         self._pending_volume = vol
+        self._volume_user_until = time.monotonic() + 2.5
         if self._volume_timeout is None:
             self._volume_timeout = GLib.timeout_add(150, self._apply_volume)
 
+    def _run_volume(self, volume):
+        try:
+            subprocess.run(
+                ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{volume / 100.0:.2f}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError:
+            pass
+
     def _apply_volume(self):
         self._volume_timeout = None
-        factor = self._pending_volume / 100.0
-        subprocess.run(
-            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{factor:.2f}"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        threading.Thread(
+            target=self._run_volume,
+            args=(self._pending_volume,),
+            daemon=True,
+        ).start()
         return False
 
     def on_restart_daemon(self, btn):
@@ -244,7 +255,7 @@ class ZenithControlApp(Gtk.Window):
             self.mic_status_lbl.set_text("Device: 'Zenith Wireless Microphone'\nStatus: Registering with PipeWire...")
 
         # Reflect the sink volume without feeding it back as a wpctl command.
-        if not self.vol_slider.has_focus():
+        if time.monotonic() >= self._volume_user_until and self._volume_timeout is None:
             self._syncing_volume = True
             try:
                 self.vol_slider.set_value(float(vol_val))
