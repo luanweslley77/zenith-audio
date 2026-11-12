@@ -25,7 +25,8 @@ fi
 
 mkdir -p "$HOME/.local/bin"
 if [ -f "$SERVER_BIN" ]; then
-    cp "$SERVER_BIN" "$INSTALL_BIN"
+    install -m 755 "$SERVER_BIN" "$INSTALL_BIN.new"
+    mv -f "$INSTALL_BIN.new" "$INSTALL_BIN"
     echo -e "${GREEN}[✓] Installed binary to:${NC} $INSTALL_BIN"
 fi
 
@@ -33,20 +34,7 @@ fi
 SERVICE_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SERVICE_DIR"
 
-cat << EOF > "$SERVICE_DIR/zenith-server.service"
-[Unit]
-Description=Zenith Ultra-Low-Latency Audio Streaming Server
-After=pipewire.service sound.target network.target
-
-[Service]
-Type=simple
-ExecStart=%h/.local/bin/zenith-server --port 59100 --bitrate 320
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
+install -m 644 "$(dirname "$0")/zenith-server.service" "$SERVICE_DIR/zenith-server.service"
 
 echo -e "${GREEN}[✓] Created service definition:${NC} $SERVICE_DIR/zenith-server.service"
 

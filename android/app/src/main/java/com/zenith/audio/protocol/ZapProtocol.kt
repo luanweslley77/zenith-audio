@@ -184,39 +184,11 @@ object ZapProtocol {
         return buildControlPacket(CMD_SET_MIC_NS, clamped.toLong(), clamped)
     }
 
-    fun buildVolumeControlPacket(volumePercent: Int): ByteArray {
-        val buf = ByteBuffer.allocate(HEADER_SIZE + 8).order(ByteOrder.BIG_ENDIAN)
-        buf.putShort(MAGIC)
-        buf.put(VERSION)
-        buf.put(PKT_CONTROL_REQ)
-        buf.putInt(0)
-        buf.putLong(System.nanoTime() / 1000L)
-        buf.putShort(8)
-        buf.putShort(FLAG_NONE)
+    fun buildVolumeControlPacket(volumePercent: Int): ByteArray =
+        buildControlPacket(CMD_SET_VOLUME, 0, volumePercent.coerceIn(0, 100))
 
-        buf.put(CMD_SET_VOLUME)
-        buf.put(0.toByte())
-        buf.putShort((volumePercent and 0xFFFF).toShort())
-        buf.putInt(0)
-        return buf.array()
-    }
-
-    fun buildMicStatePacket(isEnabled: Boolean): ByteArray {
-        val buf = ByteBuffer.allocate(HEADER_SIZE + 8).order(ByteOrder.BIG_ENDIAN)
-        buf.putShort(MAGIC)
-        buf.put(VERSION)
-        buf.put(PKT_CONTROL_REQ)
-        buf.putInt(0)
-        buf.putLong(System.nanoTime() / 1000L)
-        buf.putShort(8)
-        buf.putShort(FLAG_NONE)
-
-        buf.put(CMD_MIC_STATE)
-        buf.put(0.toByte())
-        buf.putShort((if (isEnabled) 1 else 0).toShort())
-        buf.putInt(0)
-        return buf.array()
-    }
+    fun buildMicStatePacket(isEnabled: Boolean): ByteArray =
+        buildControlPacket(CMD_MIC_STATE, 0, if (isEnabled) 1 else 0)
 
     fun buildMicAudioPacket(
         seq: Int,

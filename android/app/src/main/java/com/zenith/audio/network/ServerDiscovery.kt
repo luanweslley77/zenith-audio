@@ -9,12 +9,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -91,7 +91,7 @@ class ServerDiscovery(private val context: Context) {
                             val byteBuffer = ByteBuffer.wrap(rxPacket.data, rxPacket.offset, rxPacket.length)
                             val header = ZapProtocol.parseHeader(byteBuffer)
 
-                            if (header != null && (header.type == ZapProtocol.PKT_DISCOVERY_BEACON || header.type == ZapProtocol.PKT_SERVER_ANNOUNCE)) {
+                            if (header != null && header.type == ZapProtocol.PKT_DISCOVERY_BEACON) {
                                 val payloadBuffer = ByteBuffer.wrap(
                                     rxPacket.data,
                                     rxPacket.offset + ZapProtocol.HEADER_SIZE,
@@ -118,11 +118,10 @@ class ServerDiscovery(private val context: Context) {
                     }
 
                     // Wait 3s or wake immediately on manual scan trigger
-                    kotlinx.coroutines.selects.select<Unit> {
-                        scanTriggerChannel.onReceive { }
-                        scope.launch { delay(3000L) }.onJoin { }
-                    }
+                    withTimeoutOrNull(3000L) { scanTriggerChannel.receive() }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Discovery error", e)
             } finally {

@@ -75,14 +75,20 @@ echo -e "${GREEN}[✓] Zenith server compiled successfully!${NC}"
 # 3. Install Binary
 echo -e "\n${YELLOW}[3/4] Installing zenith-server binary...${NC}"
 mkdir -p "$HOME/.local/bin"
-cp "server/bin/zenith-server" "$HOME/.local/bin/zenith-server"
-chmod +x "$HOME/.local/bin/zenith-server"
+install -m 755 "server/bin/zenith-server" "$HOME/.local/bin/.zenith-server.new"
+mv -f "$HOME/.local/bin/.zenith-server.new" "$HOME/.local/bin/zenith-server"
+install -m 755 scripts/zenith-usb-mode.sh "$HOME/.local/bin/zenith-usb-mode.sh"
 
-# Add ~/.local/bin to PATH in bashrc / zshrc if missing
-if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    [ -f "$HOME/.zshrc" ] && echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
-fi
+# Add ~/.local/bin to PATH once per rc file
+add_path_line() {
+    local rc="$1"
+    [ -e "$rc" ] || touch "$rc"
+    if ! grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$rc"; then
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rc"
+    fi
+}
+add_path_line "$HOME/.bashrc"
+add_path_line "$HOME/.zshrc"
 echo -e "${GREEN}[✓] Installed to: $HOME/.local/bin/zenith-server${NC}"
 
 # 4. Configure & Start Systemd Background Service
@@ -90,39 +96,37 @@ echo -e "\n${YELLOW}[4/4] Setting up systemd background service...${NC}"
 SERVICE_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SERVICE_DIR"
 
-cat << EOF > "$SERVICE_DIR/zenith-server.service"
-[Unit]
-Description=Zenith Ultra-Low-Latency Audio Streaming Server
-After=pipewire.service sound.target network.target
+install -m 644 "$(dirname "$0")/scripts/zenith-server.service" "$SERVICE_DIR/zenith-server.service"
 
-[Service]
-Type=simple
-ExecStart=%h/.local/bin/zenith-server --port 59100 --bitrate 320
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl --user daemon-reload
-systemctl --user enable zenith-server.service
-systemctl --user restart zenith-server.service
+systemctl --user daemon-reload || true
+if systemctl --user enable zenith-server.service && systemctl --user restart zenith-server.service; then
+    SERVICE_OK=1
+else
+    SERVICE_OK=0
+    echo -e "${YELLOW}[!] Could not start the user service. Check 'systemctl --user status zenith-server'.${NC}"
+    echo -e "${YELLOW}    On a headless session, enable lingering: sudo loginctl enable-linger \"$USER\".${NC}"
+fi
 
 # Open firewall port 59100/udp if ufw is active
-if command -v ufw &>/dev/null && sudo ufw status | grep -q "Status: active"; then
-    echo -e "${YELLOW}[!] Opening UDP port 59100 in UFW firewall...${NC}"
+if command -v ufw &>/dev/null && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+    echo -e "${YELLOW}[!] Opening UDP port 59100 in UFW. This is an unauthenticated LAN stream;${NC}"
+    echo -e "${YELLOW}    only use it on a trusted network.${NC}"
     sudo ufw allow 59100/udp comment "Zenith Audio Server" >/dev/null 2>&1 || true
 fi
 
 # 5. Display Active IP & Status
 echo -e "\n${CYAN}================================================================${NC}"
-echo -e "${GREEN}${BOLD}       🎉 ZENITH AUDIO SERVER INSTALLED & RUNNING!             ${NC}"
+echo -e "${GREEN}${BOLD}       🎉 ZENITH AUDIO SERVER INSTALLED!                       ${NC}"
 echo -e "${CYAN}================================================================${NC}"
-echo -e "Service Status:  ${GREEN}ACTIVE (systemd --user)${NC}"
+if [ "${SERVICE_OK:-0}" -eq 1 ]; then
+    echo -e "Service Status:  ${GREEN}ACTIVE (systemd --user)${NC}"
+else
+    echo -e "Service Status:  ${YELLOW}NOT RUNNING — see the message above${NC}"
+fi
 
-# Find IPs
-WIFI_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1 || echo "Not detected")
+# Default-route source is reachable by the phone; interface listing is not.
+WIFI_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+WIFI_IP=${WIFI_IP:-Not detected}
 echo -e "Active Host IP:  ${BOLD}${CYAN}$WIFI_IP${NC}"
 echo -e "Port:            ${BOLD}59100 (UDP)${NC}"
 echo -e "\nQuick Controls:"

@@ -4,10 +4,18 @@
 #include <cstring>
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <winsock2.h>
+#if defined(_MSC_VER)
 #include <stdlib.h>
 #define htobe64_compat(x) _byteswap_uint64(x)
 #define be64toh_compat(x) _byteswap_uint64(x)
+#else
+#define htobe64_compat(x) __builtin_bswap64(x)
+#define be64toh_compat(x) __builtin_bswap64(x)
+#endif
 #else
 #include <arpa/inet.h>
 #if defined(__linux__)

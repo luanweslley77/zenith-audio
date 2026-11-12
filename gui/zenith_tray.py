@@ -9,8 +9,6 @@ import os
 import subprocess
 import threading
 import time
-import socket
-import struct
 
 try:
     import gi
@@ -27,6 +25,9 @@ class ZenithControlApp(Gtk.Window):
         self.set_default_size(480, 520)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_resizable(False)
+        self._syncing_volume = False
+        self._pending_volume = 100
+        self._volume_timeout = None
 
         # Apply Dark Theme CSS
         css_provider = Gtk.CssProvider()
@@ -67,8 +68,8 @@ class ZenithControlApp(Gtk.Window):
         title_vbox.pack_start(sub_lbl, False, False, 0)
         header_box.pack_start(title_vbox, True, True, 0)
 
-        self.status_badge = Gtk.Label(label="● RUNNING")
-        self.status_badge.override_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0, 0.9, 0.46, 1))
+        self.status_badge = Gtk.Label(label="● CHECKING")
+        self.status_badge.override_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0.6, 0.6, 0.6, 1))
         header_box.pack_end(self.status_badge, False, False, 0)
         main_box.pack_start(header_box, False, False, 0)
 
@@ -153,16 +154,55 @@ class ZenithControlApp(Gtk.Window):
         self.connect("destroy", self.on_close)
 
     def on_volume_changed(self, scale):
+        if self._syncing_volume:
+            return
         vol = int(scale.get_value())
         self.vol_pct_lbl.set_text(f"{vol}%")
-        factor = vol / 100.0
-        subprocess.run(f"wpctl set-volume @DEFAULT_AUDIO_SINK@ {factor:.2f} >/dev/null 2>&1 &", shell=True)
+        self._pending_volume = vol
+        if self._volume_timeout is None:
+            self._volume_timeout = GLib.timeout_add(150, self._apply_volume)
+
+    def _apply_volume(self):
+        self._volume_timeout = None
+        factor = self._pending_volume / 100.0
+        subprocess.run(
+            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{factor:.2f}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return False
 
     def on_restart_daemon(self, btn):
-        subprocess.run("systemctl --user restart zenith-server.service &", shell=True)
+        subprocess.Popen(["systemctl", "--user", "restart", "zenith-server.service"])
+
+    def _usb_script_path(self):
+        candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "zenith-usb-mode.sh"),
+            os.path.expanduser("~/.local/bin/zenith-usb-mode.sh"),
+            "/usr/local/bin/zenith-usb-mode.sh",
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return None
 
     def on_usb_mode(self, btn):
-        script_path = os.path.expanduser("~/Projects/zenith-audio/scripts/zenith-usb-mode.sh")
+        script_path = self._usb_script_path()
+        if script_path is None:
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                flags=0,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.OK,
+                text="zenith-usb-mode.sh not found",
+            )
+            dialog.format_secondary_text(
+                "Re-run install.sh or launch the tray from the repository checkout."
+            )
+            dialog.run()
+            dialog.destroy()
+            return
         subprocess.Popen(["bash", script_path])
 
     def poll_status(self):
@@ -192,7 +232,7 @@ class ZenithControlApp(Gtk.Window):
         if is_active:
             self.status_badge.set_text("● RUNNING")
             self.status_badge.override_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0, 0.9, 0.46, 1))
-            self.client_info_lbl.set_text("Active Receiver: Connected over Wi-Fi / USB")
+            self.client_info_lbl.set_text("Server running — waiting for a client")
         else:
             self.status_badge.set_text("● STOPPED")
             self.status_badge.override_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(1, 0.3, 0.3, 1))
@@ -202,6 +242,15 @@ class ZenithControlApp(Gtk.Window):
             self.mic_status_lbl.set_text("Device: 'Zenith Wireless Microphone'\nStatus: Online & Ready for Apps (Discord/Zoom)")
         else:
             self.mic_status_lbl.set_text("Device: 'Zenith Wireless Microphone'\nStatus: Registering with PipeWire...")
+
+        # Reflect the sink volume without feeding it back as a wpctl command.
+        if not self.vol_slider.has_focus():
+            self._syncing_volume = True
+            try:
+                self.vol_slider.set_value(float(vol_val))
+                self.vol_pct_lbl.set_text(f"{int(vol_val)}%")
+            finally:
+                self._syncing_volume = False
 
         return False
 

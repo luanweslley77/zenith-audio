@@ -29,10 +29,11 @@ if [ -z "$DEVICES" ]; then
     exit 1
 fi
 
-echo -e "${GREEN}[✓] Detected Android device:${NC} $DEVICES"
+DEVICE=$(echo "$DEVICES" | head -n 1)
+echo -e "${GREEN}[✓] Detected Android device:${NC} $DEVICE"
 
-# Check if USB network interface exists (e.g. usb0, rndis0)
-USB_IFACE=$(ip -o link show | grep -E "usb|rndis" | awk -F': ' '{print $2}' | head -n 1 || true)
+# Check if a USB network interface exists and is up (usb0, rndis0, ncm0, enp*u*)
+USB_IFACE=$(ip -o link show up | grep -E '(usb[0-9]|rndis[0-9]|ncm[0-9]|enp[^ ]*u[0-9])' | awk -F': ' '{print $2}' | head -n 1 || true)
 
 if [ -n "$USB_IFACE" ]; then
     USB_IP=$(ip -o -4 addr show "$USB_IFACE" | awk '{print $4}' | cut -d/ -f1 || true)
@@ -44,12 +45,8 @@ if [ -n "$USB_IFACE" ]; then
     fi
 fi
 
-# Fallback: Setup ADB TCP port reversal
-echo -e "${CYAN}[i] Setting up ADB reverse tunnel on port 59100...${NC}"
-adb reverse tcp:59100 tcp:59100 2>/dev/null || true
-echo -e "${GREEN}[✓] Port 59100 reversed over USB!${NC}"
-echo -e "${CYAN}--------------------------------------------------------${NC}"
-echo -e "Tip: For maximum performance, turn on:"
-echo -e "  Settings -> Portable Hotspot / Network -> ${GREEN}USB Tethering${NC}"
-echo -e "This creates a zero-latency direct hardware network interface (${USB_IFACE:-usb0})."
-echo -e "${CYAN}========================================================${NC}"
+echo -e "${YELLOW}[!] No active USB network interface found.${NC}"
+echo -e "    The audio stream uses UDP port 59100; 'adb reverse' only forwards TCP,"
+echo -e "    so it cannot carry the stream. Enable USB Tethering on the phone instead:"
+echo -e "    Settings -> Hotspot & Tethering -> USB Tethering."
+exit 1
