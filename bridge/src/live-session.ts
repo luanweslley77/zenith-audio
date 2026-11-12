@@ -95,14 +95,7 @@ export class LiveSession {
       const pcm = this.fullPcm();
       if (
         pcm.length === 0 ||
-        !hasSpeech(
-          pcm,
-          0,
-          pcm.length / 2,
-          this.config.sampleRate,
-          MIN_SPEECH_MS,
-          this.livePasses > 0 ? FINAL_RMS_THRESHOLD : LIVE_RMS_THRESHOLD,
-        )
+        !hasSpeech(pcm, 0, pcm.length / 2, this.config.sampleRate)
       ) {
         // Nothing above the speech threshold was ever captured. Sending this
         // to the model risks a hallucinated word; a silent session must yield
@@ -268,8 +261,6 @@ const LIVE_FRAME_MS = 10;
 const LIVE_PAUSE_MS = 100;
 const LIVE_SEARCH_MS = 800;
 const LIVE_RMS_THRESHOLD = 0.01;
-/** The final pass only rejects near-silence; quiet speech must survive. */
-const FINAL_RMS_THRESHOLD = 0.005;
 /** Speech above the threshold needed before anything is sent to the model. */
 const MIN_SPEECH_MS = 100;
 /** The speech run must fit inside this window, so scattered clicks cannot add up. */

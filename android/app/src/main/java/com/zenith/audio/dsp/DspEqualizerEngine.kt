@@ -116,7 +116,9 @@ class DspEqualizerEngine(private val context: Context) {
                 }
                 _bandLevels.value = merged
                 if (prefs.contains(KEY_BASS_BOOST)) {
-                    setBassBoost(_bassStrength.value, persist = false)
+                    // applyPresetInternal already overwrote _bassStrength with
+                    // the preset default; read the user's saved value instead.
+                    setBassBoost(prefs.getInt(KEY_BASS_BOOST, _bassStrength.value), persist = false)
                 }
             }
 

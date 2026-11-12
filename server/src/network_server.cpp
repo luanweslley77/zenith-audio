@@ -25,25 +25,40 @@ namespace {
  */
 class WpctlWorker {
 public:
-    WpctlWorker() : thread_([this] { run(); }) {
-        thread_.detach();
+    WpctlWorker() : thread_([this] { run(); }) {}
+
+    ~WpctlWorker() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
     }
 
     void enqueue(std::string command) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (queue_.size() >= kMaxQueued) {
+                queue_.pop_front();
+            }
             queue_.push_back(std::move(command));
         }
         cv_.notify_one();
     }
 
 private:
+    static constexpr size_t kMaxQueued = 16;
+
     void run() {
         for (;;) {
             std::string command;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [this] { return !queue_.empty(); });
+                cv_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
+                if (stopping_ && queue_.empty()) return;
                 command = std::move(queue_.front());
                 queue_.pop_front();
             }
@@ -54,6 +69,7 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<std::string> queue_;
+    bool stopping_ = false;
     std::thread thread_;
 };
 

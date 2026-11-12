@@ -39,17 +39,14 @@ class CallDuckingManager(
     private val stateLock = Any()
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var executor = Executors.newSingleThreadExecutor()
+    private val executor = Executors.newSingleThreadExecutor()
     private var telephonyCallback: Any? = null
     private var phoneStateListener: PhoneStateListener? = null
     @Volatile
     private var stopped = false
 
     fun start() {
-        if (telephonyManager != null) return
-        if (executor.isShutdown) {
-            executor = Executors.newSingleThreadExecutor()
-        }
+        if (telephonyManager != null || executor.isShutdown) return
         stopped = false
         telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
         val tm = telephonyManager ?: return
@@ -124,7 +121,9 @@ class CallDuckingManager(
 
     fun updateCurrentVolume(volumePercent: Int) {
         synchronized(stateLock) {
-            if (!isDucked) {
+            // While ducked, ignore the 15% echo but keep a genuine user
+            // adjustment so call end does not jump back over it.
+            if (!isDucked || volumePercent != DUCKED_VOLUME_PERCENT) {
                 preDuckVolume = volumePercent
             }
         }
