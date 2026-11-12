@@ -39,6 +39,8 @@ class NetworkFailoverManager(
 
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val wifiNetworks = java.util.concurrent.ConcurrentHashMap.newKeySet<Network>()
+    private val usbNetworks = java.util.concurrent.ConcurrentHashMap.newKeySet<Network>()
 
     private var cachedWifiIp: String = "192.168.1.9"
     private var isStreamingActive: Boolean = false
@@ -64,42 +66,21 @@ class NetworkFailoverManager(
                 val hasUsbEthernet = caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
                         caps.hasTransport(NetworkCapabilities.TRANSPORT_USB)
 
-                _isWifiAvailable.value = hasWifi
-                _isUsbAvailable.value = hasUsbEthernet
+                if (hasWifi) wifiNetworks.add(network) else wifiNetworks.remove(network)
+                if (hasUsbEthernet) usbNetworks.add(network) else usbNetworks.remove(network)
 
-                // Automatic Seamless Auto-Pilot Logic:
-                if (hasUsbEthernet) {
-                    val usbIp = UsbIpResolver.resolveUsbHostIp()
-                    Log.i(TAG, "High-speed USB tethering active -> Dynamic IP: $usbIp")
-                    _activeDetectedIp.value = usbIp
-                    _activeTransport.value = "USB 0.5ms Direct"
-
-                    if (isStreamingActive) {
-                        onFailoverTriggered("USB 0.5ms Direct", usbIp)
-                    }
-                } else if (hasWifi) {
-                    Log.i(TAG, "Standard Wi-Fi network active -> Dynamic IP: $cachedWifiIp")
-                    _activeDetectedIp.value = cachedWifiIp
-                    _activeTransport.value = "Wi-Fi"
-
-                    if (isStreamingActive && _activeTransport.value == "USB 0.5ms Direct") {
-                        onFailoverTriggered("Wi-Fi", cachedWifiIp)
-                    }
-                }
+                _isWifiAvailable.value = wifiNetworks.isNotEmpty()
+                _isUsbAvailable.value = usbNetworks.isNotEmpty()
+                selectTransport()
             }
 
             override fun onLost(network: Network) {
+                wifiNetworks.remove(network)
+                usbNetworks.remove(network)
+                _isWifiAvailable.value = wifiNetworks.isNotEmpty()
+                _isUsbAvailable.value = usbNetworks.isNotEmpty()
                 Log.w(TAG, "Network lost on interface. Checking fallback...")
-                if (_isUsbAvailable.value) {
-                    val usbIp = UsbIpResolver.resolveUsbHostIp()
-                    _activeDetectedIp.value = usbIp
-                    _activeTransport.value = "USB 0.5ms Direct"
-                    if (isStreamingActive) onFailoverTriggered("USB 0.5ms Direct", usbIp)
-                } else if (_isWifiAvailable.value) {
-                    _activeDetectedIp.value = cachedWifiIp
-                    _activeTransport.value = "Wi-Fi"
-                    if (isStreamingActive) onFailoverTriggered("Wi-Fi", cachedWifiIp)
-                }
+                selectTransport()
             }
         }
 
@@ -117,6 +98,31 @@ class NetworkFailoverManager(
     private var pollerJob: kotlinx.coroutines.Job? = null
     private val pollerScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
 
+    /**
+     * Chooses the transport from the union of all networks, never from a
+     * single callback (Wi-Fi and USB can be up at the same time).
+     */
+    private fun selectTransport() {
+        val previous = _activeTransport.value
+        val target: String
+        val ip: String
+        if (_isUsbAvailable.value) {
+            target = "USB 0.5ms Direct"
+            ip = UsbIpResolver.resolveUsbHostIp()
+        } else if (_isWifiAvailable.value) {
+            target = "Wi-Fi"
+            ip = cachedWifiIp
+        } else {
+            return
+        }
+        _activeDetectedIp.value = ip
+        _activeTransport.value = target
+        if (isStreamingActive && target != previous) {
+            Log.i(TAG, "[Auto-Pilot] $previous -> $target ($ip)")
+            onFailoverTriggered(target, ip)
+        }
+    }
+
     private fun startInterfacePoller() {
         pollerJob?.cancel()
         pollerJob = pollerScope.launch {
@@ -133,7 +139,9 @@ class NetworkFailoverManager(
         try {
             val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
             for (intf in interfaces) {
-                if (intf.isUp && (intf.name.startsWith("rndis") || intf.name.startsWith("usb") || intf.name.startsWith("ncm"))) {
+                if (intf.isUp && (intf.name.startsWith("rndis") || intf.name.startsWith("usb") ||
+                            intf.name.startsWith("ncm") || intf.name.startsWith("eth"))
+                ) {
                     for (addr in intf.inetAddresses) {
                         if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
                             hasUsb = true
@@ -157,7 +165,9 @@ class NetworkFailoverManager(
                 Log.i(TAG, "[Auto-Pilot] USB tethering attached -> Zero-drop hot-switching to USB $targetUsbIp")
                 onFailoverTriggered("USB 0.5ms Direct", targetUsbIp)
             }
-        } else {
+        } else if (usbNetworks.isEmpty()) {
+            // Do not clear a USB transport that ConnectivityManager still
+            // reports; the interface poller is only a fallback.
             val wasUsb = _isUsbAvailable.value
             _isUsbAvailable.value = false
             if (wasUsb) {

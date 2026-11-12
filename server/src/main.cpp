@@ -5,6 +5,7 @@
 #include <iostream>
 #include <csignal>
 #include <atomic>
+#include <cstdlib>
 #include <string>
 
 static std::atomic<bool> g_keep_running{true};

@@ -2,6 +2,8 @@ package com.zenith.audio.telephony
 
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
@@ -34,12 +36,18 @@ class CallDuckingManager(
     private var telephonyManager: TelephonyManager? = null
     private var preDuckVolume: Int = 100
     private var isDucked = false
+    private val stateLock = Any()
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
     private var telephonyCallback: Any? = null
     private var phoneStateListener: PhoneStateListener? = null
+    @Volatile
+    private var stopped = false
 
     fun start() {
+        if (telephonyManager != null) return
+        stopped = false
         telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
         val tm = telephonyManager ?: return
 
@@ -71,62 +79,80 @@ class CallDuckingManager(
     }
 
     fun stop() {
-        val tm = telephonyManager ?: return
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                (telephonyCallback as? TelephonyCallback)?.let { tm.unregisterTelephonyCallback(it) }
-            } else {
-                phoneStateListener?.let {
-                    @Suppress("DEPRECATION")
-                    tm.listen(it, PhoneStateListener.LISTEN_NONE)
+        stopped = true
+        mainHandler.removeCallbacksAndMessages(null)
+        telephonyManager?.let { tm ->
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    (telephonyCallback as? TelephonyCallback)?.let { tm.unregisterTelephonyCallback(it) }
+                } else {
+                    phoneStateListener?.let {
+                        @Suppress("DEPRECATION")
+                        tm.listen(it, PhoneStateListener.LISTEN_NONE)
+                    }
                 }
-            }
-        } catch (_: Exception) {}
+            } catch (_: Exception) {}
+        }
         telephonyCallback = null
         phoneStateListener = null
+        telephonyManager = null
 
-        if (isDucked) {
-            onSetVolume(preDuckVolume)
-            onDuckingStateChanged(false)
-            isDucked = false
+        synchronized(stateLock) {
+            if (isDucked) {
+                onSetVolume(preDuckVolume)
+                onDuckingStateChanged(false)
+                isDucked = false
+            }
         }
+        executor.shutdownNow()
     }
 
     fun setAutoDuckingEnabled(enabled: Boolean) {
         _isDuckingEnabled.value = enabled
         prefs.edit().putBoolean("call_ducking_enabled", enabled).apply()
-        if (!enabled && isDucked) {
-            onSetVolume(preDuckVolume)
-            onDuckingStateChanged(false)
-            isDucked = false
+        synchronized(stateLock) {
+            if (!enabled && isDucked) {
+                onSetVolume(preDuckVolume)
+                onDuckingStateChanged(false)
+                isDucked = false
+            }
         }
     }
 
     fun updateCurrentVolume(volumePercent: Int) {
-        if (!isDucked) {
+        synchronized(stateLock) {
             preDuckVolume = volumePercent
         }
     }
 
     private fun handleCallState(state: Int) {
-        when (state) {
-            TelephonyManager.CALL_STATE_RINGING,
-            TelephonyManager.CALL_STATE_OFFHOOK -> {
-                _isCallActive.value = true
-                if (_isDuckingEnabled.value && !isDucked) {
-                    isDucked = true
-                    Log.i(TAG, "Call active (state=$state) -> Ducking PC audio to ${DUCKED_VOLUME_PERCENT}%")
-                    onSetVolume(DUCKED_VOLUME_PERCENT)
-                    onDuckingStateChanged(true)
+        mainHandler.post {
+            if (stopped) return@post
+            handleCallStateOnMain(state)
+        }
+    }
+
+    private fun handleCallStateOnMain(state: Int) {
+        synchronized(stateLock) {
+            when (state) {
+                TelephonyManager.CALL_STATE_RINGING,
+                TelephonyManager.CALL_STATE_OFFHOOK -> {
+                    _isCallActive.value = true
+                    if (_isDuckingEnabled.value && !isDucked) {
+                        isDucked = true
+                        Log.i(TAG, "Call active (state=$state) -> Ducking PC audio to ${DUCKED_VOLUME_PERCENT}%")
+                        onSetVolume(DUCKED_VOLUME_PERCENT)
+                        onDuckingStateChanged(true)
+                    }
                 }
-            }
-            TelephonyManager.CALL_STATE_IDLE -> {
-                _isCallActive.value = false
-                if (isDucked) {
-                    Log.i(TAG, "Call ended -> Restoring PC audio volume to ${preDuckVolume}%")
-                    onSetVolume(preDuckVolume)
-                    onDuckingStateChanged(false)
-                    isDucked = false
+                TelephonyManager.CALL_STATE_IDLE -> {
+                    _isCallActive.value = false
+                    if (isDucked) {
+                        Log.i(TAG, "Call ended -> Restoring PC audio volume to ${preDuckVolume}%")
+                        onSetVolume(preDuckVolume)
+                        onDuckingStateChanged(false)
+                        isDucked = false
+                    }
                 }
             }
         }

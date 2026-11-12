@@ -77,6 +77,10 @@ if (values.help) {
 }
 if (!values.model) fail("--model is required");
 
+// Prefer the environment for the shared secret so it does not appear in the
+// process table (ps) on a shared machine. The CLI flag remains supported.
+const token = values.token || process.env.DICTATION_TOKEN || "";
+
 const port = numberInRange("port", values.port, 1, 65535);
 const maxSeconds = numberInRange("max-seconds", values["max-seconds"], 1, 3600);
 const liveWindowMs = numberInRange(
@@ -109,9 +113,9 @@ const loopback =
   values.host === "127.0.0.1" ||
   values.host === "::1" ||
   values.host === "localhost";
-if (!loopback && values.token === "") {
+if (!loopback && token === "") {
   fail(
-    "binding to a non-loopback address requires --token; the phone and the PC must share it",
+    "binding to a non-loopback address requires --token or DICTATION_TOKEN; the phone and the PC must share it",
   );
 }
 
@@ -143,7 +147,7 @@ try {
 console.error(`[bridge] Hex ready: ${client.model} (${client.language})`);
 
 const server = createBridge({
-  token: values.token,
+  token,
   maxSeconds,
   liveWindowMs,
   liveStrideMs,

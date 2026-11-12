@@ -160,18 +160,26 @@ export function createBridge(options: BridgeOptions): net.Server {
 
     const fail = (code: string, message: string): void => {
       clearIdle();
+      if (activeSocket === socket) activeSocket = null;
       if (failed || socket.destroyed) return;
       failed = true;
-      socket.write(encodeJson(FrameType.ERROR, { version: 1, code, message }));
-      socket.end();
+      if (socket.writable) {
+        socket.write(encodeJson(FrameType.ERROR, { version: 1, code, message }), () => {
+          socket.end();
+        });
+        const destroyTimer = setTimeout(() => socket.destroy(), 1000);
+        destroyTimer.unref?.();
+      } else {
+        socket.destroy();
+      }
     };
 
     const touchIdle = (): void => {
       clearIdle();
       idleTimer = setTimeout(() => {
         if (activeSocket === socket) activeSocket = null;
-        session?.cancel();
         fail("timeout", "no audio received");
+        session?.cancel();
       }, options.idleTimeoutMs);
       idleTimer.unref?.();
     };
@@ -295,5 +303,9 @@ export function createBridge(options: BridgeOptions): net.Server {
     socket.on("error", () => {
       socket.destroy();
     });
+
+    // A peer can connect and never send START; arm the idle guard immediately
+    // so it cannot hold a socket and the frame buffer indefinitely.
+    touchIdle();
   });
 }

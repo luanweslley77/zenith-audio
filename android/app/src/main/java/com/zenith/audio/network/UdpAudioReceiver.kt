@@ -12,6 +12,7 @@ import com.zenith.audio.protocol.ZapProtocol
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -54,6 +55,7 @@ class UdpAudioReceiver(private val context: Context) {
     private val audioPlayer = LowLatencyAudioPlayer(context)
 
     private var measuredRttMs: Double = 0.0
+    @Volatile
     private var currentBitrateKbps: Int = 320
     private var lastPacketTimeNs: Long = 0L
 
@@ -141,27 +143,32 @@ class UdpAudioReceiver(private val context: Context) {
         opusDecoder.stop()
         audioPlayer.stop()
 
-        _metrics.value = _metrics.value.copy(
-            connectionState = ConnectionState.DISCONNECTED
-        )
+        _metrics.update { it.copy(connectionState = ConnectionState.DISCONNECTED) }
     }
 
+    @Volatile
     private var isAutoBitrate: Boolean = false
     private var stableCycles: Int = 0
+    @Volatile
     private var currentVolumePercent: Int = 100
     private var currentTransportName: String = "Wi-Fi"
+    @Volatile
     private var isCallDuckingActive: Boolean = false
+    @Volatile
     private var isAoaDacActive: Boolean = false
+    @Volatile
     private var isPcAudioEnabled: Boolean = true
+    @Volatile
     private var isPhoneOnly: Boolean = false
     @Volatile
     private var micNoiseSuppressionPercent: Int = 0
+    @Volatile
     private var hasReceivedServerPacket: Boolean = false
     private var lastReportedState: ConnectionState? = null
 
     fun setAutoBitrate(enabled: Boolean) {
         isAutoBitrate = enabled
-        _metrics.value = _metrics.value.copy(isAutoBitrate = enabled)
+        _metrics.update { it.copy(isAutoBitrate = enabled) }
     }
 
     val dspEngine: com.zenith.audio.dsp.DspEqualizerEngine
@@ -173,24 +180,24 @@ class UdpAudioReceiver(private val context: Context) {
 
     fun setCallDuckingActive(active: Boolean) {
         isCallDuckingActive = active
-        _metrics.value = _metrics.value.copy(isCallDuckingActive = active)
+        _metrics.update { it.copy(isCallDuckingActive = active) }
     }
 
     fun setAoaDacActive(active: Boolean) {
         isAoaDacActive = active
-        _metrics.value = _metrics.value.copy(isAoaDacActive = active)
+        _metrics.update { it.copy(isAoaDacActive = active) }
     }
 
     fun setTransportName(name: String) {
         currentTransportName = name
-        _metrics.value = _metrics.value.copy(transportType = name)
+        _metrics.update { it.copy(transportType = name) }
     }
 
     fun setMasterVolume(volumePercent: Int) {
         currentVolumePercent = volumePercent.coerceIn(0, 100)
         val packet = ZapProtocol.buildVolumeControlPacket(currentVolumePercent)
         sendRaw(packet)
-        _metrics.value = _metrics.value.copy(volumePercent = currentVolumePercent)
+        _metrics.update { it.copy(volumePercent = currentVolumePercent) }
     }
 
     fun getCurrentVolume(): Int = currentVolumePercent
@@ -236,6 +243,13 @@ class UdpAudioReceiver(private val context: Context) {
         sendRaw(ZapProtocol.buildMicNoiseSuppressionPacket(micNoiseSuppressionPercent))
         sendRaw(
             ZapProtocol.buildControlPacket(
+                ZapProtocol.CMD_SET_BITRATE,
+                currentBitrateKbps * 1000L
+            )
+        )
+        sendRaw(ZapProtocol.buildVolumeControlPacket(currentVolumePercent))
+        sendRaw(
+            ZapProtocol.buildControlPacket(
                 if (isPcAudioEnabled) ZapProtocol.CMD_RESUME else ZapProtocol.CMD_PAUSE,
                 0
             )
@@ -264,10 +278,13 @@ class UdpAudioReceiver(private val context: Context) {
                 serverPort = newPort
                 Log.i(TAG, "[Failover] Zero-drop hot-switched active endpoint to $newIp:$newPort ($transportName)")
                 sendPing()
-                _metrics.value = _metrics.value.copy(
-                    serverIp = newIp,
-                    transportType = transportName
-                )
+                resendControlState()
+                _metrics.update {
+                    it.copy(
+                        serverIp = newIp,
+                        transportType = transportName
+                    )
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "[Failover] Failed to switch endpoint to $newIp", e)
             }
@@ -279,7 +296,7 @@ class UdpAudioReceiver(private val context: Context) {
         val targetBps = bitrateKbps * 1000L
         val packet = ZapProtocol.buildControlPacket(ZapProtocol.CMD_SET_BITRATE, targetBps)
         sendRaw(packet)
-        _metrics.value = _metrics.value.copy(bitrateKbps = bitrateKbps)
+        _metrics.update { it.copy(bitrateKbps = bitrateKbps) }
     }
 
     private fun sendPing() {

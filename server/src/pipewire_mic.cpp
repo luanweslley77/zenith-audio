@@ -56,11 +56,10 @@ bool PipeWireMicSink::start() {
 }
 
 void PipeWireMicSink::stop() {
-    if (!is_running_.load()) return;
     is_running_.store(false);
 
-    if (loop_) {
-        pw_main_loop_quit(loop_);
+    if (auto *loop = loop_.load()) {
+        pw_main_loop_quit(loop);
     }
 
     if (loop_thread_.joinable()) {
@@ -71,12 +70,13 @@ void PipeWireMicSink::stop() {
 void PipeWireMicSink::thread_main() {
     pw_init(nullptr, nullptr);
 
-    loop_ = pw_main_loop_new(nullptr);
-    if (!loop_) {
+    auto *loop = pw_main_loop_new(nullptr);
+    if (!loop) {
         std::cerr << "[PipeWireMic] Failed to create main loop\n";
         is_running_.store(false);
         return;
     }
+    loop_.store(loop);
 
     struct pw_properties *props = pw_properties_new(
         PW_KEY_MEDIA_TYPE, "Audio",
@@ -91,18 +91,19 @@ void PipeWireMicSink::thread_main() {
         nullptr
     );
 
-    stream_ = pw_stream_new_simple(
-        pw_main_loop_get_loop(loop_),
+    auto *stream = pw_stream_new_simple(
+        pw_main_loop_get_loop(loop),
         "zenith-mic-source",
         props,
         &mic_stream_events,
         this
     );
+    stream_.store(stream);
 
-    if (!stream_) {
+    if (!stream) {
         std::cerr << "[PipeWireMic] Failed to create stream\n";
-        pw_main_loop_destroy(loop_);
-        loop_ = nullptr;
+        pw_main_loop_destroy(loop);
+        loop_.store(nullptr);
         is_running_.store(false);
         return;
     }
@@ -121,7 +122,7 @@ void PipeWireMicSink::thread_main() {
     params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 
     int res = pw_stream_connect(
-        stream_,
+        stream,
         PW_DIRECTION_OUTPUT,
         PW_ID_ANY,
         static_cast<enum pw_stream_flags>(
@@ -134,11 +135,21 @@ void PipeWireMicSink::thread_main() {
 
     if (res < 0) {
         std::cerr << "[PipeWireMic] Failed to connect stream: " << res << "\n";
-        pw_stream_destroy(stream_);
-        stream_ = nullptr;
-        pw_main_loop_destroy(loop_);
-        loop_ = nullptr;
+        pw_stream_destroy(stream);
+        stream_.store(nullptr);
+        pw_main_loop_destroy(loop);
+        loop_.store(nullptr);
         is_running_.store(false);
+        return;
+    }
+
+    // stop() may have run while the loop was being created; it could not quit
+    // a loop that did not exist yet. Re-check before entering run().
+    if (!is_running_.load()) {
+        pw_stream_destroy(stream);
+        stream_.store(nullptr);
+        pw_main_loop_destroy(loop);
+        loop_.store(nullptr);
         return;
     }
 
@@ -146,16 +157,12 @@ void PipeWireMicSink::thread_main() {
     std::cout << "[PipeWireMic] RNNoise noise suppression: "
               << (noise_suppressor_.available() ? "ON" : "OFF")
               << "\n" << std::flush;
-    pw_main_loop_run(loop_);
+    pw_main_loop_run(loop);
 
-    if (stream_) {
-        pw_stream_destroy(stream_);
-        stream_ = nullptr;
-    }
-    if (loop_) {
-        pw_main_loop_destroy(loop_);
-        loop_ = nullptr;
-    }
+    pw_stream_destroy(stream);
+    stream_.store(nullptr);
+    pw_main_loop_destroy(loop);
+    loop_.store(nullptr);
 }
 
 void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is_pcm,
@@ -165,6 +172,9 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
 
     if (jitter_buffer_.will_restart(seq, discontinuity)) {
         noise_suppressor_.reset();
+        if (opus_decoder_) {
+            opus_decoder_ctl(opus_decoder_, OPUS_RESET_STATE);
+        }
     }
 
     // Late/duplicate packets must not advance the stateful Opus decoder or the
@@ -187,12 +197,17 @@ void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is
         noise_suppressor_.process(converted, samples);
         jitter_buffer_.push_float(converted, samples, seq, discontinuity);
     } else {
-        if (!opus_decoder_) return;
+        if (!opus_decoder_) {
+            jitter_buffer_.note_rejected();
+            return;
+        }
         float decoded[960 * 2]; // up to 40 ms at 48 kHz
         int samples = opus_decode_float(opus_decoder_, data, size, decoded, 960 * 2, 0);
         if (samples > 0) {
             noise_suppressor_.process(decoded, static_cast<size_t>(samples));
             jitter_buffer_.push_float(decoded, static_cast<size_t>(samples), seq, discontinuity);
+        } else {
+            jitter_buffer_.note_rejected();
         }
     }
 }
@@ -210,15 +225,17 @@ void PipeWireMicSink::set_noise_suppression_percent(int percent) {
 }
 
 void PipeWireMicSink::process_audio() {
-    if (!stream_) return;
+    auto *stream = stream_.load();
+    if (!stream) return;
 
-    struct pw_buffer *b = pw_stream_dequeue_buffer(stream_);
+    struct pw_buffer *b = pw_stream_dequeue_buffer(stream);
     if (!b) return;
 
     struct spa_buffer *buf = b->buffer;
-    float *dst = static_cast<float*>(buf->datas[0].data);
-    if (!dst) {
-        pw_stream_queue_buffer(stream_, b);
+    struct spa_data *data = &buf->datas[0];
+    float *dst = static_cast<float*>(data->data);
+    if (!dst || !data->chunk) {
+        pw_stream_queue_buffer(stream, b);
         return;
     }
 
@@ -229,14 +246,15 @@ void PipeWireMicSink::process_audio() {
     if (b->requested > 0) {
         req_samples = static_cast<uint32_t>(b->requested);
     }
-    if (buf->datas[0].maxsize >= sizeof(float)) {
-        req_samples = std::min<uint32_t>(req_samples, buf->datas[0].maxsize / sizeof(float));
-    }
+    // Clamp even when the buffer cannot hold a single float; req_samples == 0
+    // below handles an unusable buffer without writing out of bounds.
+    const uint32_t max_samples = data->maxsize / sizeof(float);
+    req_samples = std::min(req_samples, max_samples);
     if (req_samples == 0) {
-        buf->datas[0].chunk->offset = 0;
-        buf->datas[0].chunk->stride = sizeof(float);
-        buf->datas[0].chunk->size = 0;
-        pw_stream_queue_buffer(stream_, b);
+        data->chunk->offset = 0;
+        data->chunk->stride = sizeof(float);
+        data->chunk->size = 0;
+        pw_stream_queue_buffer(stream, b);
         return;
     }
 
@@ -244,11 +262,11 @@ void PipeWireMicSink::process_audio() {
     // silence, so the virtual source never exposes a hole in the timeline.
     jitter_buffer_.pull(dst, req_samples);
 
-    buf->datas[0].chunk->offset = 0;
-    buf->datas[0].chunk->stride = sizeof(float);
-    buf->datas[0].chunk->size = req_samples * sizeof(float);
+    data->chunk->offset = 0;
+    data->chunk->stride = sizeof(float);
+    data->chunk->size = req_samples * sizeof(float);
 
-    pw_stream_queue_buffer(stream_, b);
+    pw_stream_queue_buffer(stream, b);
 }
 
 } // namespace zenith

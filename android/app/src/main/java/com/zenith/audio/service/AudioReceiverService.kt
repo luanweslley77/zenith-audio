@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
@@ -25,6 +26,7 @@ import com.zenith.audio.network.UdpAudioReceiver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -136,7 +138,8 @@ class AudioReceiverService : Service() {
                 receiver?.switchEndpoint(targetIp.ifEmpty { "10.81.101.129" }, transportName = "USB AOA 2.0 DAC")
             } else {
                 receiver?.setAoaDacActive(false)
-                receiver?.switchEndpoint(targetIp.ifEmpty { "192.168.1.9" }, transportName = "Wi-Fi")
+                val wifiFallback = prefs.getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
+                receiver?.switchEndpoint(targetIp.ifEmpty { wifiFallback }, transportName = "Wi-Fi")
             }
         }.apply { start() }
 
@@ -148,7 +151,7 @@ class AudioReceiverService : Service() {
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ZenithAudio::StreamWakeLock")
-        wakeLock?.acquire(12 * 60 * 60 * 1000L) // 12 hours max
+        // The wake lock is acquired only while streaming (see startStreaming).
 
         createNotificationChannel()
     }
@@ -160,7 +163,7 @@ class AudioReceiverService : Service() {
                 val port = intent.getIntExtra(EXTRA_PORT, com.zenith.audio.protocol.ZapProtocol.DEFAULT_PORT)
                 val bitrate = intent.getIntExtra(EXTRA_BITRATE, 320)
 
-                startForeground(NOTIFICATION_ID, buildNotification("Connecting to $ip..."))
+                startStreamingForeground("Connecting to $ip...")
                 startStreaming(ip, port, bitrate)
             }
             ACTION_STOP -> {
@@ -237,6 +240,11 @@ class AudioReceiverService : Service() {
         val mic = micRecorder ?: return false
         micPausedForDictation = false
         return if (enable) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // The service may have started before RECORD_AUDIO was granted;
+                // re-declare the type now that the mic is actually used.
+                startStreamingForeground("Streaming to PC")
+            }
             mic.applySettings(readMicSettings(), restartIfRecording = false)
             mic.start()
         } else {
@@ -314,6 +322,7 @@ class AudioReceiverService : Service() {
 
     private fun startStreaming(ip: String, port: Int, bitrate: Int) {
         acquireWifiLock()
+        wakeLock?.acquire(12 * 60 * 60 * 1000L) // 12 hours max
         failoverManager?.updateWifiServerIp(ip)
         failoverManager?.setStreamingActive(true)
 
@@ -375,10 +384,14 @@ class AudioReceiverService : Service() {
 
         receiver?.stop()
         releaseWifiLock()
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+        }
     }
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        serviceScope.cancel()
         stopStreaming()
         releaseWifiLock()
         serverDiscovery.stopDiscovery()
@@ -389,6 +402,27 @@ class AudioReceiverService : Service() {
             if (it.isHeld) it.release()
         }
         super.onDestroy()
+    }
+
+    /**
+     * Android 14 applies every manifest-declared FGS type with the two-arg
+     * startForeground. Include the microphone type only when RECORD_AUDIO is
+     * granted, otherwise connecting would throw SecurityException.
+     */
+    private fun startStreamingForeground(text: String) {
+        val notification = buildNotification(text)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            startForeground(NOTIFICATION_ID, notification, type)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun createNotificationChannel() {

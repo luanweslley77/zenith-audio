@@ -115,6 +115,7 @@ class MicAudioRecorder(
     @Volatile
     private var gainDb: Float = MicSettings.DEFAULT_GAIN_DB
 
+    @Synchronized
     fun applySettings(newSettings: MicSettings, restartIfRecording: Boolean = true) {
         val sanitized = newSettings.copy(
             gainDb = newSettings.gainDb.coerceIn(MicSettings.MIN_GAIN_DB, MicSettings.MAX_GAIN_DB),
@@ -181,6 +182,7 @@ class MicAudioRecorder(
 
 
 
+    @Synchronized
     fun start(): Boolean {
         if (running.get()) return true
 
@@ -249,6 +251,7 @@ class MicAudioRecorder(
         }
     }
 
+    @Synchronized
     fun stop() {
         val wasRunning = running.getAndSet(false)
 
@@ -306,61 +309,84 @@ class MicAudioRecorder(
             }
         } catch (_: Exception) {}
 
-        while (running.get()) {
-            val bytesRead = try {
-                record.read(buffer, 0, FRAME_BYTES)
-            } catch (e: Exception) {
-                if (running.get()) {
-                    Log.w(TAG, "AudioRecord read failed: ${e.message}")
+        try {
+            while (running.get()) {
+                val bytesRead = try {
+                    record.read(buffer, 0, FRAME_BYTES)
+                } catch (e: Exception) {
+                    if (running.get()) {
+                        Log.w(TAG, "AudioRecord read failed: ${e.message}")
+                    }
+                    break
                 }
-                break
+
+                if (bytesRead > 0) {
+                    val gain = 10.0.pow(gainDb.toDouble() / 20.0).toFloat()
+
+                    var i = 0
+                    while (i < bytesRead - 1) {
+                        val raw = (buffer[i].toInt() and 0xFF) or (buffer[i + 1].toInt() shl 8)
+                        var sample = raw.toShort() / 32768f
+
+                        sample = highPass.process(sample)
+                        sample *= gain
+                        sample = softLimit(sample)
+
+                        val out = (sample * 32767f).toInt().coerceIn(-32768, 32767)
+                        buffer[i] = (out and 0xFF).toByte()
+                        buffer[i + 1] = ((out shr 8) and 0xFF).toByte()
+
+                        sumSquares += out.toDouble() * out.toDouble()
+                        samplesCount++
+                        i += 2
+                    }
+
+                    if (samplesCount >= LEVEL_WINDOW_SAMPLES) {
+                        val rms = sqrt(sumSquares / samplesCount)
+                        _micLevel.value = (rms / 32768.0).toFloat().coerceIn(0f, 1f)
+                        sumSquares = 0.0
+                        samplesCount = 0
+                    }
+
+                    val isDiscontinuity = (seq == 0)
+                    val frame = if (packetize) {
+                        ZapProtocol.buildMicAudioPacket(
+                            seq = seq,
+                            audioData = buffer,
+                            size = bytesRead,
+                            isPcm = true,
+                            isDiscontinuity = isDiscontinuity
+                        )
+                    } else {
+                        buffer.copyOf(bytesRead)
+                    }
+                    seq++
+                    sendAudioPacket(frame)
+                } else if (bytesRead < 0) {
+                    Log.w(TAG, "AudioRecord read error: $bytesRead")
+                    break
+                }
             }
-
-            if (bytesRead > 0) {
-                val gain = 10.0.pow(gainDb.toDouble() / 20.0).toFloat()
-
-                var i = 0
-                while (i < bytesRead - 1) {
-                    val raw = (buffer[i].toInt() and 0xFF) or (buffer[i + 1].toInt() shl 8)
-                    var sample = raw.toShort() / 32768f
-
-                    sample = highPass.process(sample)
-                    sample *= gain
-                    sample = softLimit(sample)
-
-                    val out = (sample * 32767f).toInt().coerceIn(-32768, 32767)
-                    buffer[i] = (out and 0xFF).toByte()
-                    buffer[i + 1] = ((out shr 8) and 0xFF).toByte()
-
-                    sumSquares += out.toDouble() * out.toDouble()
-                    samplesCount++
-                    i += 2
+        } finally {
+            // Unexpected exit (read error, callback exception, HAL death) must
+            // not leave the UI and the PC believing the microphone is still on.
+            val wasRunning = running.getAndSet(false)
+            _isRecording.value = false
+            _micLevel.value = 0f
+            _routedDevice.value = ""
+            _activeSource.value = ""
+            if (wasRunning) {
+                if (packetize) {
+                    try {
+                        sendControlPacket(ZapProtocol.buildMicStatePacket(false))
+                    } catch (_: Exception) {}
                 }
-
-                if (samplesCount >= LEVEL_WINDOW_SAMPLES) {
-                    val rms = sqrt(sumSquares / samplesCount)
-                    _micLevel.value = (rms / 32768.0).toFloat().coerceIn(0f, 1f)
-                    sumSquares = 0.0
-                    samplesCount = 0
-                }
-
-                val isDiscontinuity = (seq == 0)
-                val frame = if (packetize) {
-                    ZapProtocol.buildMicAudioPacket(
-                        seq = seq,
-                        audioData = buffer,
-                        size = bytesRead,
-                        isPcm = true,
-                        isDiscontinuity = isDiscontinuity
-                    )
-                } else {
-                    buffer.copyOf(bytesRead)
-                }
-                seq++
-                sendAudioPacket(frame)
-            } else if (bytesRead < 0) {
-                Log.w(TAG, "AudioRecord read error: $bytesRead")
-                break
+                try {
+                    record.stop()
+                } catch (_: Exception) {}
+                audioRecord?.release()
+                audioRecord = null
+                Log.w(TAG, "Microphone capture loop ended unexpectedly")
             }
         }
     }

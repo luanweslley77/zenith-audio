@@ -11,6 +11,7 @@ import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.Executors
 
 object UsbIpResolver {
     fun resolveUsbHostIp(): String {
@@ -72,6 +73,7 @@ class AoaDacManager(
     val isUsbConnected: StateFlow<Boolean> = _isUsbConnected.asStateFlow()
 
     private var usbManager: UsbManager? = null
+    private val ioExecutor = Executors.newSingleThreadExecutor()
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -86,15 +88,17 @@ class AoaDacManager(
                     Log.i(TAG, "USB Accessory Attached: ${accessory?.description}")
                     _isUsbConnected.value = true
                     if (_isAoaEnabled.value) {
-                        val usbIp = UsbIpResolver.resolveUsbHostIp()
-                        onSwitchTransport(true, usbIp)
+                        ioExecutor.execute {
+                            val usbIp = UsbIpResolver.resolveUsbHostIp()
+                            onSwitchTransport(true, usbIp)
+                        }
                     }
                 }
                 UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
                     Log.i(TAG, "USB Accessory Detached")
                     _isUsbConnected.value = false
                     if (_isAoaEnabled.value) {
-                        onSwitchTransport(false, "")
+                        ioExecutor.execute { onSwitchTransport(false, "") }
                     }
                 }
             }
@@ -113,8 +117,11 @@ class AoaDacManager(
             context.registerReceiver(usbReceiver, filter)
         }
 
-        if (_isAoaEnabled.value && usbManager?.accessoryList?.isNotEmpty() == true) {
-            onSwitchTransport(true, UsbIpResolver.resolveUsbHostIp())
+        _isUsbConnected.value = usbManager?.accessoryList?.isNotEmpty() == true
+        if (_isAoaEnabled.value && _isUsbConnected.value) {
+            ioExecutor.execute {
+                onSwitchTransport(true, UsbIpResolver.resolveUsbHostIp())
+            }
         }
     }
 
@@ -122,6 +129,7 @@ class AoaDacManager(
         try {
             context.unregisterReceiver(usbReceiver)
         } catch (_: Exception) {}
+        ioExecutor.shutdownNow()
     }
 
     fun setAoaModeEnabled(enabled: Boolean, fallbackWifiIp: String) {
@@ -130,12 +138,18 @@ class AoaDacManager(
         Log.i(TAG, "AOA 2.0 Hardware USB DAC mode toggled: $enabled")
 
         if (enabled) {
-            val usbIp = UsbIpResolver.resolveUsbHostIp()
-            Log.i(TAG, "AOA USB DAC enabled -> Routing to USB host $usbIp")
-            onSwitchTransport(true, usbIp)
+            if (!_isUsbConnected.value) {
+                Log.i(TAG, "AOA enabled; waiting for a USB accessory before switching")
+                return
+            }
+            ioExecutor.execute {
+                val usbIp = UsbIpResolver.resolveUsbHostIp()
+                Log.i(TAG, "AOA USB DAC enabled -> Routing to USB host $usbIp")
+                onSwitchTransport(true, usbIp)
+            }
         } else {
             Log.i(TAG, "AOA USB DAC disabled -> Restoring Wi-Fi to $fallbackWifiIp")
-            onSwitchTransport(false, fallbackWifiIp)
+            ioExecutor.execute { onSwitchTransport(false, fallbackWifiIp) }
         }
     }
 }

@@ -33,15 +33,15 @@ class DspEqualizerEngine(private val context: Context) {
 
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
-    private var currentSessionId: Int = 0
-
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _isEnabled = MutableStateFlow(prefs.getBoolean(KEY_ENABLED, true))
     val isEnabled: StateFlow<Boolean> = _isEnabled.asStateFlow()
 
     private val _currentPreset = MutableStateFlow(
-        Preset.valueOf(prefs.getString(KEY_PRESET, Preset.FLAT.name) ?: Preset.FLAT.name)
+        runCatching {
+            Preset.valueOf(prefs.getString(KEY_PRESET, Preset.FLAT.name) ?: Preset.FLAT.name)
+        }.getOrDefault(Preset.FLAT)
     )
     val currentPreset: StateFlow<Preset> = _currentPreset.asStateFlow()
 
@@ -57,21 +57,20 @@ class DspEqualizerEngine(private val context: Context) {
     fun attach(audioSessionId: Int) {
         if (audioSessionId == 0) return
         detach()
-        currentSessionId = audioSessionId
 
+        var eq: Equalizer? = null
+        var bb: BassBoost? = null
         try {
-            val eq = Equalizer(0, audioSessionId).apply {
+            eq = Equalizer(0, audioSessionId).apply {
                 enabled = _isEnabled.value
             }
-            equalizer = eq
 
-            val bb = BassBoost(0, audioSessionId).apply {
+            bb = BassBoost(0, audioSessionId).apply {
                 enabled = _isEnabled.value
                 if (strengthSupported) {
                     setStrength(_bassStrength.value.toShort())
                 }
             }
-            bassBoost = bb
 
             // Read hardware band info
             val numBands = eq.numberOfBands.toInt()
@@ -81,6 +80,7 @@ class DspEqualizerEngine(private val context: Context) {
 
             val bandList = mutableListOf<BandInfo>()
             val currentLevels = mutableMapOf<Int, Int>()
+            val hadSavedBands = prefs.contains("band_level_0")
 
             for (i in 0 until numBands) {
                 val centerFreqHz = eq.getCenterFreq(i.toShort()) / 1000
@@ -92,14 +92,26 @@ class DspEqualizerEngine(private val context: Context) {
                 } catch (_: Exception) {}
             }
 
+            equalizer = eq
+            bassBoost = bb
             _bands.value = bandList
             _bandLevels.value = currentLevels
 
-            // Apply active preset
-            applyPresetInternal(_currentPreset.value, savePref = false)
+            // A saved band curve is the user's real state; re-applying the
+            // preset would overwrite it. Only materialize the preset when no
+            // per-band values exist yet.
+            if (!hadSavedBands) {
+                applyPresetInternal(_currentPreset.value, savePref = false)
+            }
 
             Log.i(TAG, "Hardware DSP attached to session $audioSessionId with $numBands bands")
         } catch (e: Exception) {
+            try { eq?.release() } catch (_: Exception) {}
+            try { bb?.release() } catch (_: Exception) {}
+            equalizer = null
+            bassBoost = null
+            _bands.value = emptyList()
+            _bandLevels.value = emptyMap()
             Log.e(TAG, "Failed to initialize hardware DSP Equalizer", e)
         }
     }
@@ -113,7 +125,6 @@ class DspEqualizerEngine(private val context: Context) {
         } catch (_: Exception) {}
         equalizer = null
         bassBoost = null
-        currentSessionId = 0
     }
 
     fun setEnabled(enabled: Boolean) {
@@ -133,10 +144,12 @@ class DspEqualizerEngine(private val context: Context) {
         applyPresetInternal(preset, savePref = true)
     }
 
-    fun setBassBoost(strength: Int) {
+    fun setBassBoost(strength: Int, persist: Boolean = true) {
         val clamped = strength.coerceIn(0, 1000)
         _bassStrength.value = clamped
-        prefs.edit().putInt(KEY_BASS_BOOST, clamped).apply()
+        if (persist) {
+            prefs.edit().putInt(KEY_BASS_BOOST, clamped).apply()
+        }
         try {
             if (bassBoost?.strengthSupported == true) {
                 bassBoost?.setStrength(clamped.toShort())
@@ -175,7 +188,7 @@ class DspEqualizerEngine(private val context: Context) {
                 for (i in 0 until numBands) {
                     newLevels[i] = 0
                 }
-                setBassBoost(0)
+                setBassBoost(0, persist = savePref)
             }
             Preset.GAMING_FPS -> {
                 // Boost upper midrange and treble (footstep / reload cues)
@@ -188,7 +201,7 @@ class DspEqualizerEngine(private val context: Context) {
                     }
                     newLevels[i] = boostMb.coerceIn(minMb, maxMb)
                 }
-                setBassBoost(0)
+                setBassBoost(0, persist = savePref)
             }
             Preset.BASS_BEAST -> {
                 // Heavy sub-bass and bass boost
@@ -201,7 +214,7 @@ class DspEqualizerEngine(private val context: Context) {
                     }
                     newLevels[i] = boostMb.coerceIn(minMb, maxMb)
                 }
-                setBassBoost(850)
+                setBassBoost(850, persist = savePref)
             }
             Preset.CINEMA_VOCAL -> {
                 // Vocal presence in 500Hz - 3kHz range
@@ -211,7 +224,7 @@ class DspEqualizerEngine(private val context: Context) {
                     val boostMb = (550 * (1.0f - (distFromCenter * 2.0f))).toInt()
                     newLevels[i] = boostMb.coerceIn(minMb, maxMb)
                 }
-                setBassBoost(300)
+                setBassBoost(300, persist = savePref)
             }
         }
 

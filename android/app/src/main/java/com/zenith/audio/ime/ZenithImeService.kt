@@ -83,6 +83,9 @@ class ZenithImeService : InputMethodService() {
      */
     private var pendingConnection: InputConnection? = null
 
+    /** Connections that received a provisional PARTIAL, so they can be cleared. */
+    private val previewConnections = mutableSetOf<InputConnection>()
+
     private val maxDurationRunnable = Runnable {
         if (state == State.RECORDING) {
             Log.i(TAG, "Dictation reached the ${MAX_DICTATION_MS / 1000} s cap; finishing")
@@ -119,7 +122,11 @@ class ZenithImeService : InputMethodService() {
                 // field's preview is cleared on finish and the final commit
                 // inserts into the new field.
                 val connection = previewConnection()
-                runCatching { connection?.setComposingText(text, 1) }
+                val shown = runCatching { connection?.setComposingText(text, 1) }
+                    .getOrDefault(false) == true
+                if (shown && connection != null) {
+                    previewConnections.add(connection)
+                }
             }
         }
 
@@ -297,61 +304,79 @@ class ZenithImeService : InputMethodService() {
             // The session may have been cancelled while this task was queued.
             if (destroyed || client !== session) return@execute
 
-            // Both captures share one Android microphone; release the
-            // streaming one before opening a second AudioRecord.
-            streamingMicPaused.set(AudioReceiverService.pauseMicForDictation())
+            var keepMicPaused = false
+            var capture: MicAudioRecorder? = null
+            try {
+                // Both captures share one Android microphone; release the
+                // streaming one before opening a second AudioRecord.
+                streamingMicPaused.set(AudioReceiverService.pauseMicForDictation())
 
-            // A fresh detector per session: the 2 s count starts with the
-            // first spoken frame, not with capture.
-            val silence = SilenceDetector()
-            silenceDetector = silence
-            val capture = MicAudioRecorder(
-                context = this,
-                sendAudioPacket = { frame ->
-                    session.enqueue(frame)
-                    if (silence.onFrame(frame)) {
-                        mainHandler.post { autoStopFromSilence(silence) }
+                // A fresh detector per session: the 2 s count starts with the
+                // first spoken frame, not with capture.
+                val silence = SilenceDetector()
+                silenceDetector = silence
+                val newCapture = MicAudioRecorder(
+                    context = this,
+                    sendAudioPacket = { frame ->
+                        session.enqueue(frame)
+                        if (silence.onFrame(frame)) {
+                            mainHandler.post { autoStopFromSilence(silence) }
+                        }
+                    },
+                    sendControlPacket = {},
+                    packetize = false
+                )
+                capture = newCapture
+                // Dictation is held in the hand and should not inherit the
+                // streaming mic's negative gain or back-mic choice. Use the
+                // phone's default (bottom) mic and 0 dB for ASR.
+                val settings = MicSettingsStore.read(this).copy(
+                    gainDb = MicSettings.DEFAULT_GAIN_DB,
+                    inputDeviceId = MicSettings.DEFAULT_INPUT_DEVICE,
+                    inputDeviceAddress = ""
+                )
+                newCapture.applySettings(settings, restartIfRecording = false)
+                val started = newCapture.start()
+                if (started) keepMicPaused = true
+
+                // Cancelled while AudioRecord was opening: close it right here,
+                // on the capture thread, without opening the microphone again.
+                if (destroyed || client !== session) {
+                    newCapture.stop()
+                    return@execute
+                }
+
+                mainHandler.post {
+                    if (state != State.CONNECTING || client !== session) {
+                        // The user released or cancelled while the device opened.
+                        stopCapture(newCapture)
+                        return@post
                     }
-                },
-                sendControlPacket = {},
-                packetize = false
-            )
-            // Dictation is held in the hand and should not inherit the
-            // streaming mic's negative gain or back-mic choice. Use the
-            // phone's default (bottom) mic and 0 dB for ASR.
-            val settings = MicSettingsStore.read(this).copy(
-                gainDb = MicSettings.DEFAULT_GAIN_DB,
-                inputDeviceId = MicSettings.DEFAULT_INPUT_DEVICE,
-                inputDeviceAddress = ""
-            )
-            capture.applySettings(settings, restartIfRecording = false)
-            val started = capture.start()
-
-            // Cancelled while AudioRecord was opening: close it right here,
-            // on the capture thread, without opening the microphone again.
-            if (destroyed || client !== session) {
-                capture.stop()
-                resumeStreamingMicIfPaused()
-                return@execute
-            }
-
-            mainHandler.post {
-                if (state != State.CONNECTING || client !== session) {
-                    // The user released or cancelled while the device opened.
-                    stopCapture(capture)
-                    return@post
+                    if (!started) {
+                        stopCapture(newCapture)
+                        failSession("microphone")
+                        return@post
+                    }
+                    recorder = newCapture
+                    state = State.RECORDING
+                    setStatus(getString(R.string.ime_status_listening))
+                    updateSessionUi()
+                    mainHandler.removeCallbacks(maxDurationRunnable)
+                    mainHandler.postDelayed(maxDurationRunnable, MAX_DICTATION_MS)
                 }
-                if (!started) {
-                    stopCapture(capture)
-                    failSession("microphone")
-                    return@post
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not start dictation capture", e)
+                capture?.stop()
+                keepMicPaused = false
+                mainHandler.post {
+                    if (state == State.CONNECTING && client === session) {
+                        failSession("microphone")
+                    }
                 }
-                recorder = capture
-                state = State.RECORDING
-                setStatus(getString(R.string.ime_status_listening))
-                updateSessionUi()
-                mainHandler.removeCallbacks(maxDurationRunnable)
-                mainHandler.postDelayed(maxDurationRunnable, MAX_DICTATION_MS)
+            } finally {
+                if (!keepMicPaused) {
+                    resumeStreamingMicIfPaused()
+                }
             }
         }
     }
@@ -514,6 +539,8 @@ class ZenithImeService : InputMethodService() {
             // our underlined preview; the committed text replaced it only on
             // the connection that accepted this insert.
             candidates.filter { it !== connection }.forEach { clearComposing(it) }
+            previewConnections.filter { it !== connection }.forEach { clearComposing(it) }
+            previewConnections.clear()
             Log.i(TAG, "Committed ${text.length} chars, state=$state")
             return CommitOutcome.INSERTED
         }
@@ -535,6 +562,8 @@ class ZenithImeService : InputMethodService() {
 
     private fun clearComposing() {
         connectionCandidates().forEach { clearComposing(it) }
+        previewConnections.forEach { clearComposing(it) }
+        previewConnections.clear()
     }
 
     private fun clearComposing(connection: InputConnection?) {

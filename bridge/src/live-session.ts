@@ -95,7 +95,14 @@ export class LiveSession {
       const pcm = this.fullPcm();
       if (
         pcm.length === 0 ||
-        !hasSpeech(pcm, 0, pcm.length / 2, this.config.sampleRate)
+        !hasSpeech(
+          pcm,
+          0,
+          pcm.length / 2,
+          this.config.sampleRate,
+          MIN_SPEECH_MS,
+          FINAL_RMS_THRESHOLD,
+        )
       ) {
         // Nothing above the speech threshold was ever captured. Sending this
         // to the model risks a hallucinated word; a silent session must yield
@@ -104,7 +111,7 @@ export class LiveSession {
           (pcm.length / 2 / this.config.sampleRate) * 1000,
         );
         console.log(`[final] no speech in ${durationMs} ms; returning empty`);
-        this.sendResult("", 0, 0);
+        this.sendResult("", durationMs, 0);
         this.close();
         return;
       }
@@ -226,10 +233,7 @@ export class LiveSession {
   ): void {
     if (this.closed) return;
     if (this.config.logTranscripts) {
-      console.log(`[final] ${text}`);
-    }
-    if (this.config.logTranscripts && text.length > 0) {
-      console.log(`[final] ${text.length} chars, ${durationMs} ms`);
+      console.log(`[final] ${text} (${text.length} chars, ${durationMs} ms)`);
     }
     this.sendJson(FrameType.RESULT, {
       version: 1,
@@ -264,6 +268,8 @@ const LIVE_FRAME_MS = 10;
 const LIVE_PAUSE_MS = 100;
 const LIVE_SEARCH_MS = 800;
 const LIVE_RMS_THRESHOLD = 0.01;
+/** The final pass only rejects near-silence; quiet speech must survive. */
+const FINAL_RMS_THRESHOLD = 0.005;
 /** Speech above the threshold needed before anything is sent to the model. */
 const MIN_SPEECH_MS = 100;
 /** The speech run must fit inside this window, so scattered clicks cannot add up. */
@@ -296,6 +302,7 @@ export function hasSpeech(
   endSample: number,
   sampleRate: number,
   minSpeechMs: number = MIN_SPEECH_MS,
+  rmsThreshold: number = LIVE_RMS_THRESHOLD,
 ): boolean {
   const samplesPerFrame = frameSamples(sampleRate);
   const requiredFrames = Math.max(1, Math.ceil(minSpeechMs / LIVE_FRAME_MS));
@@ -311,7 +318,7 @@ export function hasSpeech(
     sample += samplesPerFrame
   ) {
     const speech =
-      frameRms(pcm, sample, samplesPerFrame) >= LIVE_RMS_THRESHOLD ? 1 : 0;
+      frameRms(pcm, sample, samplesPerFrame) >= rmsThreshold ? 1 : 0;
     recent.push(speech);
     speechFrames += speech;
     if (recent.length > windowFrames) {

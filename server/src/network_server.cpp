@@ -1,5 +1,9 @@
 #include "network_server.hpp"
 #include <iostream>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <thread>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -383,11 +387,12 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
 
                 if (ctrl.command == zap::CMD_SET_VOLUME) {
                     int vol_pct = ctrl.param16;
-                    if (vol_pct >= 0 && vol_pct <= 100) {
+                    if (vol_pct <= 100) {
                         double vol_factor = static_cast<double>(vol_pct) / 100.0;
                         char cmd[128];
-                        snprintf(cmd, sizeof(cmd), "wpctl set-volume @DEFAULT_AUDIO_SINK@ %.2f >/dev/null 2>&1 &", vol_factor);
-                        system(cmd);
+                        snprintf(cmd, sizeof(cmd), "wpctl set-volume @DEFAULT_AUDIO_SINK@ %.2f >/dev/null 2>&1", vol_factor);
+                        // The UDP receive thread must never fork or wait for a shell.
+                        std::thread([cmd_copy = std::string(cmd)] { std::system(cmd_copy.c_str()); }).detach();
                     }
                 } else if (ctrl.command == zap::CMD_MIC_STATE) {
                     bool mic_on = (ctrl.param16 == 1);
@@ -420,9 +425,9 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                     }
                     char cmd[128];
                     snprintf(cmd, sizeof(cmd),
-                             "wpctl set-mute @DEFAULT_AUDIO_SINK@ %d >/dev/null 2>&1 &",
+                             "wpctl set-mute @DEFAULT_AUDIO_SINK@ %d >/dev/null 2>&1",
                              mute ? 1 : 0);
-                    system(cmd);
+                    std::thread([cmd_copy = std::string(cmd)] { std::system(cmd_copy.c_str()); }).detach();
                     std::cout << "[Network] Client PC speaker mute: "
                               << (mute ? "ON" : "OFF") << "\n" << std::flush;
                 }
@@ -475,7 +480,8 @@ void NetworkServer::send_discovery_beacon(const struct sockaddr_in &dest_addr) {
     std::memset(&beacon_payload, 0, sizeof(beacon_payload));
     char host[32] = {0};
     gethostname(host, sizeof(host) - 1);
-    snprintf(beacon_payload.server_name, sizeof(beacon_payload.server_name), "UWAIS-PC (%s)", host);
+    snprintf(beacon_payload.server_name, sizeof(beacon_payload.server_name), "%s",
+             host[0] ? host : "Zenith Audio");
     beacon_payload.port = port_;
     beacon_payload.version = zap::VERSION;
     beacon_payload.sample_rate = current_format_.sample_rate > 0 ? current_format_.sample_rate : 48000;

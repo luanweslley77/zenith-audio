@@ -25,7 +25,7 @@ class AdaptiveJitterBuffer(
     private var lastTransitTimeUs: Long = 0L
     private var hasPrevPacket: Boolean = false
 
-    private var targetDelayMs: Double = 10.0
+    private var targetDelayMs: Double = 5.0
     private var isGamingMode: Boolean = true
     private var isPrebuffered = false
     private var missingSeqSinceMs: Long = 0L
@@ -173,9 +173,11 @@ class AdaptiveJitterBuffer(
                 }
 
                 val waitTimeMs = nowMs - missingSeqSinceMs
-                // Wait up to 35ms for out-of-order packets before declaring loss,
-                // unless buffer depth is already backed up (> 8 frames).
-                if (waitTimeMs < 35L && packetMap.size < 8) {
+                // Gaming mode must not wait the media-mode reorder window;
+                // one lost packet would otherwise cost several target frames.
+                val reorderWaitMs = if (isGamingMode) 8L else 35L
+                val maxReorderFrames = if (isGamingMode) 4 else 8
+                if (waitTimeMs < reorderWaitMs && packetMap.size < maxReorderFrames) {
                     return PopResult.WaitingForReorder
                 }
 
@@ -220,7 +222,7 @@ class AdaptiveJitterBuffer(
             packetsLostCount.set(0)
             estimatedJitterUs = 0.0
             hasPrevPacket = false
-            targetDelayMs = 40.0
+            targetDelayMs = if (isGamingMode) 5.0 else 40.0
             isPrebuffered = false
             missingSeqSinceMs = 0L
             emptySinceMs = 0L

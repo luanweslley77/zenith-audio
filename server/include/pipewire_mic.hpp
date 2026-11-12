@@ -30,8 +30,8 @@ public:
 private:
     void thread_main();
 
-    struct pw_main_loop *loop_ = nullptr;
-    struct pw_stream *stream_ = nullptr;
+    std::atomic<struct pw_main_loop *> loop_{nullptr};
+    std::atomic<struct pw_stream *> stream_{nullptr};
     std::thread loop_thread_;
     std::atomic<bool> is_running_{false};
 

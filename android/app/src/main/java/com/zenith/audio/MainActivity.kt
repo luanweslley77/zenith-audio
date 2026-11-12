@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
 
     private var audioService: AudioReceiverService? = null
     private var isBound = false
+    private var bindRequested = false
     private val metricsState = mutableStateOf(StreamMetrics())
     private val discoveredServersState = mutableStateOf<List<ZapProtocol.DiscoveredServer>>(emptyList())
     private val isMicRecordingState = mutableStateOf(false)
@@ -84,6 +85,7 @@ class MainActivity : ComponentActivity() {
             val service = localBinder?.getService() ?: return
             audioService = service
             isBound = true
+            bindRequested = true
 
             service.getMetricsFlow()?.let { flow ->
                 lifecycleScope.launch {
@@ -201,6 +203,7 @@ class MainActivity : ComponentActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             audioService = null
             isBound = false
+            bindRequested = false
         }
     }
 
@@ -208,14 +211,16 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ -> }
 
+    private val micPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) audioService?.toggleMic(true)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestRequiredPermissions()
-
-        try {
-            val serviceIntent = Intent(this, AudioReceiverService::class.java)
-            bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
-        } catch (_: Exception) {}
+        ensureServiceBound()
 
         val prefs = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
         val initialIp = prefs.getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
@@ -332,12 +337,16 @@ class MainActivity : ComponentActivity() {
                             audioService?.setAoaModeEnabled(enabled, currentIp)
                         },
                         onToggleMic = { enable ->
-                            if (enable && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                                != PackageManager.PERMISSION_GRANTED
-                            ) {
-                                requestRequiredPermissions()
-                            } else {
-                                audioService?.toggleMic(enable)
+                            val canStart = !enable ||
+                                metricsState.value.connectionState == ConnectionState.CONNECTED
+                            if (canStart) {
+                                if (enable && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                                    != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                } else {
+                                    audioService?.toggleMic(enable)
+                                }
                             }
                         },
                         onOpenMicSettings = { showMicSettingsState.value = true },
@@ -392,7 +401,21 @@ class MainActivity : ComponentActivity() {
         } else {
             startService(intent)
         }
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        ensureServiceBound()
+    }
+
+    private fun ensureServiceBound() {
+        if (bindRequested || isBound) return
+        try {
+            bindService(
+                Intent(this, AudioReceiverService::class.java),
+                serviceConnection,
+                Context.BIND_AUTO_CREATE
+            )
+            bindRequested = true
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Could not bind audio service", e)
+        }
     }
 
     private fun stopStreamingService() {
@@ -400,17 +423,19 @@ class MainActivity : ComponentActivity() {
             action = AudioReceiverService.ACTION_STOP
         }
         startService(intent)
-        if (isBound) {
+        if (isBound || bindRequested) {
             unbindService(serviceConnection)
             isBound = false
+            bindRequested = false
         }
         metricsState.value = StreamMetrics(connectionState = ConnectionState.DISCONNECTED)
     }
 
     override fun onDestroy() {
-        if (isBound) {
+        if (isBound || bindRequested) {
             unbindService(serviceConnection)
             isBound = false
+            bindRequested = false
         }
         super.onDestroy()
     }
@@ -1426,7 +1451,9 @@ fun ZenithAudioScreen(
                     value = volumeSlider,
                     onValueChange = {
                         volumeSlider = it
-                        onVolumeChange(it.toInt())
+                    },
+                    onValueChangeFinished = {
+                        onVolumeChange(volumeSlider.toInt())
                     },
                     valueRange = 0f..100f,
                     colors = SliderDefaults.colors(

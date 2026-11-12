@@ -141,7 +141,8 @@ public:
         }
 
         if (!started_) {
-            if (ring_.available_to_read() >= kTargetSamples) {
+            const size_t prefillTarget = std::max<size_t>(kTargetSamples, samples);
+            if (ring_.available_to_read() >= prefillTarget) {
                 started_ = true;
                 fade_in_ = kFadeSamples;
             } else {
@@ -151,10 +152,11 @@ public:
         }
 
         size_t available = ring_.available_to_read();
-        if (available > kTargetSamples + kMaxExtraSamples) {
+        const size_t keepSamples = std::max<size_t>(kTargetSamples, samples);
+        if (available > keepSamples + kMaxExtraSamples) {
             // A Wi-Fi burst or a short hiccup must not become permanent extra
             // latency. Drop the oldest audio and fade back in.
-            size_t to_skip = available - kTargetSamples;
+            size_t to_skip = available - keepSamples;
             size_t skipped = ring_.skip(to_skip);
             skipped_samples_.fetch_add(skipped, std::memory_order_relaxed);
             overruns_.fetch_add(1, std::memory_order_relaxed);
