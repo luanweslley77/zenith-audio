@@ -29,6 +29,7 @@ class ZenithControlApp(Gtk.Window):
         self._pending_volume = 100
         self._volume_timeout = None
         self._volume_user_until = 0.0
+        self._volume_lock = threading.Lock()
 
         # Apply Dark Theme CSS
         css_provider = Gtk.CssProvider()
@@ -166,14 +167,18 @@ class ZenithControlApp(Gtk.Window):
 
     def _run_volume(self, volume):
         try:
-            subprocess.run(
-                ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{volume / 100.0:.2f}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-        except OSError:
-            pass
+            with self._volume_lock:
+                # Drop a stale debounce tick; the newest value wins.
+                if volume != self._pending_volume:
+                    return
+                subprocess.run(
+                    ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{volume / 100.0:.2f}"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+        except OSError as exc:
+            print(f"[Zenith] Could not apply volume: {exc}", file=sys.stderr)
 
     def _apply_volume(self):
         self._volume_timeout = None

@@ -82,16 +82,15 @@ install -m 755 scripts/zenith-usb-mode.sh "$HOME/.local/bin/zenith-usb-mode.sh"
 # Add ~/.local/bin to PATH once per rc file
 add_path_line() {
     local rc="$1"
-    case ":$PATH:" in
-        *":$HOME/.local/bin:"*) return 0 ;;
-    esac
-    [ -e "$rc" ] || return 0
+    [ -e "$rc" ] || touch "$rc"
     if ! grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$rc"; then
         echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rc"
     fi
 }
 add_path_line "$HOME/.bashrc"
-add_path_line "$HOME/.zshrc"
+if command -v zsh &>/dev/null; then
+    add_path_line "$HOME/.zshrc"
+fi
 echo -e "${GREEN}[✓] Installed to: $HOME/.local/bin/zenith-server${NC}"
 
 # 4. Configure & Start Systemd Background Service
@@ -99,19 +98,25 @@ echo -e "\n${YELLOW}[4/4] Setting up systemd background service...${NC}"
 SERVICE_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SERVICE_DIR"
 
+UNIT_INSTALLED=0
 if [ -f scripts/zenith-server.service ]; then
     install -m 644 scripts/zenith-server.service "$SERVICE_DIR/zenith-server.service"
+    UNIT_INSTALLED=1
 else
     echo -e "${RED}[✗] scripts/zenith-server.service not found; the service was not installed.${NC}"
 fi
 
-systemctl --user daemon-reload || true
-if systemctl --user enable zenith-server.service && systemctl --user restart zenith-server.service; then
-    SERVICE_OK=1
+if [ "$UNIT_INSTALLED" -eq 1 ]; then
+    systemctl --user daemon-reload || true
+    if systemctl --user enable zenith-server.service && systemctl --user restart zenith-server.service; then
+        SERVICE_OK=1
+    else
+        SERVICE_OK=0
+        echo -e "${YELLOW}[!] Could not start the user service. Check 'systemctl --user status zenith-server'.${NC}"
+        echo -e "${YELLOW}    On a headless session, enable lingering: sudo loginctl enable-linger \"$USER\".${NC}"
+    fi
 else
     SERVICE_OK=0
-    echo -e "${YELLOW}[!] Could not start the user service. Check 'systemctl --user status zenith-server'.${NC}"
-    echo -e "${YELLOW}    On a headless session, enable lingering: sudo loginctl enable-linger \"$USER\".${NC}"
 fi
 
 # Open firewall port 59100/udp if ufw is active
