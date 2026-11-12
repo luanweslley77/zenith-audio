@@ -26,6 +26,11 @@ namespace {
  */
 class WpctlWorker {
 public:
+    struct QueuedCommand {
+        std::string command;
+        std::string coalesceKey;
+    };
+
     WpctlWorker() : thread_([this] { run(); }) {}
 
     ~WpctlWorker() {
@@ -39,26 +44,22 @@ public:
         }
     }
 
-    void enqueue(std::string command) {
+    void enqueue(std::string command, std::string coalesceKey = {}) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stopping_) return;
-            // Keep only the latest value for each independent state command.
-            const char *marker = command.find("set-volume") != std::string::npos
-                                     ? "set-volume"
-                                     : (command.find("set-mute") != std::string::npos ? "set-mute" : nullptr);
-            if (marker != nullptr) {
+            if (!coalesceKey.empty()) {
                 queue_.erase(
                     std::remove_if(queue_.begin(), queue_.end(),
-                                   [marker](const std::string &queued) {
-                                       return queued.find(marker) != std::string::npos;
+                                   [&coalesceKey](const QueuedCommand &queued) {
+                                       return queued.coalesceKey == coalesceKey;
                                    }),
                     queue_.end());
             }
             if (queue_.size() >= kMaxQueued) {
                 queue_.pop_front();
             }
-            queue_.push_back(std::move(command));
+            queue_.push_back({std::move(command), std::move(coalesceKey)});
         }
         cv_.notify_one();
     }
@@ -68,21 +69,21 @@ private:
 
     void run() {
         for (;;) {
-            std::string command;
+            QueuedCommand queued;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 cv_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
                 if (stopping_ && queue_.empty()) return;
-                command = std::move(queue_.front());
+                queued = std::move(queue_.front());
                 queue_.pop_front();
             }
-            std::system(command.c_str());
+            std::system(queued.command.c_str());
         }
     }
 
     std::mutex mutex_;
     std::condition_variable cv_;
-    std::deque<std::string> queue_;
+    std::deque<QueuedCommand> queue_;
     bool stopping_ = false;
     std::thread thread_;
 };
@@ -474,7 +475,7 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                         char cmd[128];
                         snprintf(cmd, sizeof(cmd), "wpctl set-volume @DEFAULT_AUDIO_SINK@ %.2f >/dev/null 2>&1", vol_factor);
                         // The UDP receive thread must never fork or wait for a shell.
-                        wpctl_worker().enqueue(std::string(cmd));
+                        wpctl_worker().enqueue(std::string(cmd), "volume");
                     }
                 } else if (ctrl.command == zap::CMD_MIC_STATE) {
                     bool mic_on = (ctrl.param16 == 1);
@@ -509,7 +510,7 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                     snprintf(cmd, sizeof(cmd),
                              "wpctl set-mute @DEFAULT_AUDIO_SINK@ %d >/dev/null 2>&1",
                              mute ? 1 : 0);
-                    wpctl_worker().enqueue(std::string(cmd));
+                    wpctl_worker().enqueue(std::string(cmd), "mute");
                     std::cout << "[Network] Client PC speaker mute: "
                               << (mute ? "ON" : "OFF") << "\n" << std::flush;
                 }

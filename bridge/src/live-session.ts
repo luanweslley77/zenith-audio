@@ -268,8 +268,8 @@ const LIVE_FRAME_MS = 10;
 const LIVE_PAUSE_MS = 100;
 const LIVE_SEARCH_MS = 800;
 const LIVE_RMS_THRESHOLD = 0.01;
-/** The final pass accepts quieter speech than a preview (-46 dBFS). */
-const FINAL_RMS_THRESHOLD = 0.005;
+/** The final pass accepts quieter speech than a preview (-44 dBFS). */
+const FINAL_RMS_THRESHOLD = 0.006;
 /** Speech above the threshold needed before anything is sent to the model. */
 const MIN_SPEECH_MS = 100;
 /** The speech run must fit inside this window, so scattered clicks cannot add up. */

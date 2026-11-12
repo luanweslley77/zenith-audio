@@ -143,6 +143,16 @@ describe("speech gate", () => {
     }
     expect(hasSpeech(pcm, 0, samples, 48_000)).toBe(false);
   });
+
+  test("the final floor still rejects a hum near the boundary", () => {
+    const samples = 4_800;
+    const pcm = Buffer.alloc(samples * 2);
+    for (let sample = 0; sample < samples; sample += 1) {
+      const value = Math.round(240 * Math.sin((2 * Math.PI * 120 * sample) / 48_000));
+      pcm.writeInt16LE(value, sample * 2);
+    }
+    expect(hasSpeech(pcm, 0, samples, 48_000, 100, 0.006)).toBe(false);
+  });
 });
 
 describe("live session", () => {
