@@ -43,6 +43,8 @@ class NetworkFailoverManager(
     private val usbNetworks = java.util.concurrent.ConcurrentHashMap.newKeySet<Network>()
 
     private var cachedWifiIp: String = "192.168.1.9"
+    @Volatile
+    private var pollerUsbDetected = false
     private var isStreamingActive: Boolean = false
 
     fun start(initialWifiIp: String = "192.168.1.9") {
@@ -70,7 +72,7 @@ class NetworkFailoverManager(
                 if (hasUsbEthernet) usbNetworks.add(network) else usbNetworks.remove(network)
 
                 _isWifiAvailable.value = wifiNetworks.isNotEmpty()
-                _isUsbAvailable.value = usbNetworks.isNotEmpty()
+                _isUsbAvailable.value = usbNetworks.isNotEmpty() || pollerUsbDetected
                 selectTransport()
             }
 
@@ -78,7 +80,7 @@ class NetworkFailoverManager(
                 wifiNetworks.remove(network)
                 usbNetworks.remove(network)
                 _isWifiAvailable.value = wifiNetworks.isNotEmpty()
-                _isUsbAvailable.value = usbNetworks.isNotEmpty()
+                _isUsbAvailable.value = usbNetworks.isNotEmpty() || pollerUsbDetected
                 Log.w(TAG, "Network lost on interface. Checking fallback...")
                 selectTransport()
             }
@@ -113,6 +115,8 @@ class NetworkFailoverManager(
             target = "Wi-Fi"
             ip = cachedWifiIp
         } else {
+            _activeDetectedIp.value = ""
+            _activeTransport.value = "Offline"
             return
         }
         _activeDetectedIp.value = ip
@@ -156,6 +160,7 @@ class NetworkFailoverManager(
 
         if (hasUsb) {
             val wasUsb = _isUsbAvailable.value
+            pollerUsbDetected = true
             _isUsbAvailable.value = true
             val targetUsbIp = usbHostIp.ifBlank { "10.81.101.129" }
             _activeDetectedIp.value = targetUsbIp
@@ -169,6 +174,7 @@ class NetworkFailoverManager(
             // Do not clear a USB transport that ConnectivityManager still
             // reports; the interface poller is only a fallback.
             val wasUsb = _isUsbAvailable.value
+            pollerUsbDetected = false
             _isUsbAvailable.value = false
             if (wasUsb) {
                 Log.i(TAG, "[Auto-Pilot] USB tethering detached -> Falling back to Wi-Fi $cachedWifiIp")

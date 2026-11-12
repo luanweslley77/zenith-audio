@@ -101,7 +101,7 @@ export class LiveSession {
           pcm.length / 2,
           this.config.sampleRate,
           MIN_SPEECH_MS,
-          FINAL_RMS_THRESHOLD,
+          this.livePasses > 0 ? FINAL_RMS_THRESHOLD : LIVE_RMS_THRESHOLD,
         )
       ) {
         // Nothing above the speech threshold was ever captured. Sending this

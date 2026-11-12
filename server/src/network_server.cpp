@@ -11,6 +11,58 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <chrono>
+#include <deque>
+#include <condition_variable>
+#include <mutex>
+#include <string>
+#include <utility>
+
+namespace {
+
+/**
+ * Serializes wpctl invocations off the UDP receive thread. One persistent
+ * worker avoids a detached thread and shell fork per control packet.
+ */
+class WpctlWorker {
+public:
+    WpctlWorker() : thread_([this] { run(); }) {
+        thread_.detach();
+    }
+
+    void enqueue(std::string command) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            queue_.push_back(std::move(command));
+        }
+        cv_.notify_one();
+    }
+
+private:
+    void run() {
+        for (;;) {
+            std::string command;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this] { return !queue_.empty(); });
+                command = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            std::system(command.c_str());
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<std::string> queue_;
+    std::thread thread_;
+};
+
+WpctlWorker &wpctl_worker() {
+    static WpctlWorker worker;
+    return worker;
+}
+
+} // namespace
 
 namespace zenith {
 
@@ -392,7 +444,7 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                         char cmd[128];
                         snprintf(cmd, sizeof(cmd), "wpctl set-volume @DEFAULT_AUDIO_SINK@ %.2f >/dev/null 2>&1", vol_factor);
                         // The UDP receive thread must never fork or wait for a shell.
-                        std::thread([cmd_copy = std::string(cmd)] { std::system(cmd_copy.c_str()); }).detach();
+                        wpctl_worker().enqueue(std::string(cmd));
                     }
                 } else if (ctrl.command == zap::CMD_MIC_STATE) {
                     bool mic_on = (ctrl.param16 == 1);
@@ -427,7 +479,7 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                     snprintf(cmd, sizeof(cmd),
                              "wpctl set-mute @DEFAULT_AUDIO_SINK@ %d >/dev/null 2>&1",
                              mute ? 1 : 0);
-                    std::thread([cmd_copy = std::string(cmd)] { std::system(cmd_copy.c_str()); }).detach();
+                    wpctl_worker().enqueue(std::string(cmd));
                     std::cout << "[Network] Client PC speaker mute: "
                               << (mute ? "ON" : "OFF") << "\n" << std::flush;
                 }

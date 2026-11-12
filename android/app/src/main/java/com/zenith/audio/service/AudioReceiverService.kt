@@ -151,6 +151,7 @@ class AudioReceiverService : Service() {
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ZenithAudio::StreamWakeLock")
+        wakeLock?.setReferenceCounted(false)
         // The wake lock is acquired only while streaming (see startStreaming).
 
         createNotificationChannel()

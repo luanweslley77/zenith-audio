@@ -39,7 +39,7 @@ class CallDuckingManager(
     private val stateLock = Any()
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val executor = Executors.newSingleThreadExecutor()
+    private var executor = Executors.newSingleThreadExecutor()
     private var telephonyCallback: Any? = null
     private var phoneStateListener: PhoneStateListener? = null
     @Volatile
@@ -47,6 +47,9 @@ class CallDuckingManager(
 
     fun start() {
         if (telephonyManager != null) return
+        if (executor.isShutdown) {
+            executor = Executors.newSingleThreadExecutor()
+        }
         stopped = false
         telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
         val tm = telephonyManager ?: return
@@ -121,7 +124,9 @@ class CallDuckingManager(
 
     fun updateCurrentVolume(volumePercent: Int) {
         synchronized(stateLock) {
-            preDuckVolume = volumePercent
+            if (!isDucked) {
+                preDuckVolume = volumePercent
+            }
         }
     }
 

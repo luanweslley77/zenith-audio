@@ -343,6 +343,7 @@ class ZenithImeService : InputMethodService() {
                 // on the capture thread, without opening the microphone again.
                 if (destroyed || client !== session) {
                     newCapture.stop()
+                    keepMicPaused = false
                     return@execute
                 }
 

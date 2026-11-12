@@ -58,8 +58,11 @@ bool PipeWireMicSink::start() {
 void PipeWireMicSink::stop() {
     is_running_.store(false);
 
-    if (auto *loop = loop_.load()) {
-        pw_main_loop_quit(loop);
+    {
+        std::lock_guard<std::mutex> lock(loop_mutex_);
+        if (auto *loop = loop_.load()) {
+            pw_main_loop_quit(loop);
+        }
     }
 
     if (loop_thread_.joinable()) {
@@ -76,7 +79,10 @@ void PipeWireMicSink::thread_main() {
         is_running_.store(false);
         return;
     }
-    loop_.store(loop);
+    {
+        std::lock_guard<std::mutex> lock(loop_mutex_);
+        loop_.store(loop);
+    }
 
     struct pw_properties *props = pw_properties_new(
         PW_KEY_MEDIA_TYPE, "Audio",
@@ -102,8 +108,11 @@ void PipeWireMicSink::thread_main() {
 
     if (!stream) {
         std::cerr << "[PipeWireMic] Failed to create stream\n";
-        pw_main_loop_destroy(loop);
-        loop_.store(nullptr);
+        {
+            std::lock_guard<std::mutex> lock(loop_mutex_);
+            pw_main_loop_destroy(loop);
+            loop_.store(nullptr);
+        }
         is_running_.store(false);
         return;
     }
@@ -137,8 +146,11 @@ void PipeWireMicSink::thread_main() {
         std::cerr << "[PipeWireMic] Failed to connect stream: " << res << "\n";
         pw_stream_destroy(stream);
         stream_.store(nullptr);
-        pw_main_loop_destroy(loop);
-        loop_.store(nullptr);
+        {
+            std::lock_guard<std::mutex> lock(loop_mutex_);
+            pw_main_loop_destroy(loop);
+            loop_.store(nullptr);
+        }
         is_running_.store(false);
         return;
     }
@@ -148,8 +160,11 @@ void PipeWireMicSink::thread_main() {
     if (!is_running_.load()) {
         pw_stream_destroy(stream);
         stream_.store(nullptr);
-        pw_main_loop_destroy(loop);
-        loop_.store(nullptr);
+        {
+            std::lock_guard<std::mutex> lock(loop_mutex_);
+            pw_main_loop_destroy(loop);
+            loop_.store(nullptr);
+        }
         return;
     }
 
@@ -161,8 +176,11 @@ void PipeWireMicSink::thread_main() {
 
     pw_stream_destroy(stream);
     stream_.store(nullptr);
-    pw_main_loop_destroy(loop);
-    loop_.store(nullptr);
+    {
+        std::lock_guard<std::mutex> lock(loop_mutex_);
+        pw_main_loop_destroy(loop);
+        loop_.store(nullptr);
+    }
 }
 
 void PipeWireMicSink::push_audio_frame(const uint8_t *data, size_t size, bool is_pcm,

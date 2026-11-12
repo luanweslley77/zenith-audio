@@ -73,7 +73,7 @@ class AoaDacManager(
     val isUsbConnected: StateFlow<Boolean> = _isUsbConnected.asStateFlow()
 
     private var usbManager: UsbManager? = null
-    private val ioExecutor = Executors.newSingleThreadExecutor()
+    private var ioExecutor = Executors.newSingleThreadExecutor()
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -106,6 +106,9 @@ class AoaDacManager(
     }
 
     fun start() {
+        if (ioExecutor.isShutdown) {
+            ioExecutor = Executors.newSingleThreadExecutor()
+        }
         usbManager = context.getSystemService(Context.USB_SERVICE) as? UsbManager
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_ACCESSORY_ATTACHED)
@@ -133,6 +136,9 @@ class AoaDacManager(
     }
 
     fun setAoaModeEnabled(enabled: Boolean, fallbackWifiIp: String) {
+        if (ioExecutor.isShutdown) {
+            ioExecutor = Executors.newSingleThreadExecutor()
+        }
         _isAoaEnabled.value = enabled
         prefs.edit().putBoolean("aoa_enabled", enabled).apply()
         Log.i(TAG, "AOA 2.0 Hardware USB DAC mode toggled: $enabled")

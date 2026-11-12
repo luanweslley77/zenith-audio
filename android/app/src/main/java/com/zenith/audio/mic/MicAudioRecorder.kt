@@ -384,8 +384,8 @@ class MicAudioRecorder(
                 try {
                     record.stop()
                 } catch (_: Exception) {}
-                audioRecord?.release()
-                audioRecord = null
+                record.release()
+                if (audioRecord === record) audioRecord = null
                 Log.w(TAG, "Microphone capture loop ended unexpectedly")
             }
         }

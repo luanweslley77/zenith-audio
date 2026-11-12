@@ -222,7 +222,7 @@ class AdaptiveJitterBuffer(
             packetsLostCount.set(0)
             estimatedJitterUs = 0.0
             hasPrevPacket = false
-            targetDelayMs = if (isGamingMode) 5.0 else 40.0
+            targetDelayMs = if (isGamingMode) 5.0 else 35.0
             isPrebuffered = false
             missingSeqSinceMs = 0L
             emptySinceMs = 0L

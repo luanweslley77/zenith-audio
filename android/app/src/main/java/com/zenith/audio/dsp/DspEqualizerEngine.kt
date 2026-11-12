@@ -80,13 +80,16 @@ class DspEqualizerEngine(private val context: Context) {
 
             val bandList = mutableListOf<BandInfo>()
             val currentLevels = mutableMapOf<Int, Int>()
-            val hadSavedBands = prefs.contains("band_level_0")
+            val savedLevels = mutableMapOf<Int, Int>()
 
             for (i in 0 until numBands) {
                 val centerFreqHz = eq.getCenterFreq(i.toShort()) / 1000
                 bandList.add(BandInfo(i, centerFreqHz, minMb, maxMb))
                 val savedLevel = prefs.getInt("band_level_$i", eq.getBandLevel(i.toShort()).toInt())
                 currentLevels[i] = savedLevel
+                if (prefs.contains("band_level_$i")) {
+                    savedLevels[i] = savedLevel
+                }
                 try {
                     eq.setBandLevel(i.toShort(), savedLevel.toShort())
                 } catch (_: Exception) {}
@@ -97,11 +100,24 @@ class DspEqualizerEngine(private val context: Context) {
             _bands.value = bandList
             _bandLevels.value = currentLevels
 
-            // A saved band curve is the user's real state; re-applying the
-            // preset would overwrite it. Only materialize the preset when no
-            // per-band values exist yet.
-            if (!hadSavedBands) {
+            // A saved band curve is the user's real state. Materialize the
+            // preset for bands never touched, then overlay every saved band
+            // and the saved bass value.
+            if (savedLevels.isEmpty()) {
                 applyPresetInternal(_currentPreset.value, savePref = false)
+            } else {
+                applyPresetInternal(_currentPreset.value, savePref = false)
+                val merged = _bandLevels.value.toMutableMap()
+                for ((band, level) in savedLevels) {
+                    try {
+                        eq.setBandLevel(band.toShort(), level.toShort())
+                    } catch (_: Exception) {}
+                    merged[band] = level
+                }
+                _bandLevels.value = merged
+                if (prefs.contains(KEY_BASS_BOOST)) {
+                    setBassBoost(_bassStrength.value, persist = false)
+                }
             }
 
             Log.i(TAG, "Hardware DSP attached to session $audioSessionId with $numBands bands")

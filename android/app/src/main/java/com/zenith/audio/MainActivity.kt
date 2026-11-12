@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -203,7 +204,9 @@ class MainActivity : ComponentActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             audioService = null
             isBound = false
-            bindRequested = false
+            // The binding itself still exists; Android may reconnect. Keep
+            // bindRequested so ensureServiceBound does not bind twice and
+            // onDestroy still unbinds exactly once.
         }
     }
 
@@ -347,6 +350,12 @@ class MainActivity : ComponentActivity() {
                                 } else {
                                     audioService?.toggleMic(enable)
                                 }
+                            } else {
+                                Toast.makeText(
+                                    this,
+                                    getString(R.string.mic_requires_stream),
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
                         },
                         onOpenMicSettings = { showMicSettingsState.value = true },
@@ -407,15 +416,26 @@ class MainActivity : ComponentActivity() {
     private fun ensureServiceBound() {
         if (bindRequested || isBound) return
         try {
-            bindService(
+            bindRequested = bindService(
                 Intent(this, AudioReceiverService::class.java),
                 serviceConnection,
                 Context.BIND_AUTO_CREATE
             )
-            bindRequested = true
         } catch (e: Exception) {
+            bindRequested = false
             android.util.Log.w("MainActivity", "Could not bind audio service", e)
         }
+    }
+
+    private fun unbindIfNeeded() {
+        if (!isBound && !bindRequested) return
+        try {
+            unbindService(serviceConnection)
+        } catch (e: IllegalArgumentException) {
+            android.util.Log.w("MainActivity", "Service was not bound", e)
+        }
+        isBound = false
+        bindRequested = false
     }
 
     private fun stopStreamingService() {
@@ -423,20 +443,12 @@ class MainActivity : ComponentActivity() {
             action = AudioReceiverService.ACTION_STOP
         }
         startService(intent)
-        if (isBound || bindRequested) {
-            unbindService(serviceConnection)
-            isBound = false
-            bindRequested = false
-        }
+        unbindIfNeeded()
         metricsState.value = StreamMetrics(connectionState = ConnectionState.DISCONNECTED)
     }
 
     override fun onDestroy() {
-        if (isBound || bindRequested) {
-            unbindService(serviceConnection)
-            isBound = false
-            bindRequested = false
-        }
+        unbindIfNeeded()
         super.onDestroy()
     }
 

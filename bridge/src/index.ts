@@ -77,9 +77,9 @@ if (values.help) {
 }
 if (!values.model) fail("--model is required");
 
-// Prefer the environment for the shared secret so it does not appear in the
+// The environment is preferred so the shared secret does not appear in the
 // process table (ps) on a shared machine. The CLI flag remains supported.
-const token = values.token || process.env.DICTATION_TOKEN || "";
+const token = process.env.DICTATION_TOKEN || values.token || "";
 
 const port = numberInRange("port", values.port, 1, 65535);
 const maxSeconds = numberInRange("max-seconds", values["max-seconds"], 1, 3600);

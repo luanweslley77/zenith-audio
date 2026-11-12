@@ -262,6 +262,7 @@ export function createBridge(options: BridgeOptions): net.Server {
     };
 
     socket.on("data", (chunk: Buffer) => {
+      if (failed || socket.destroyed) return;
       let frames;
       try {
         frames = parser.push(chunk);

@@ -5,6 +5,7 @@
 #include <opus/opus.h>
 #include <thread>
 #include <atomic>
+#include <mutex>
 #include <vector>
 #include <cstdint>
 #include "mic_jitter_buffer.hpp"
@@ -32,6 +33,7 @@ private:
 
     std::atomic<struct pw_main_loop *> loop_{nullptr};
     std::atomic<struct pw_stream *> stream_{nullptr};
+    std::mutex loop_mutex_;
     std::thread loop_thread_;
     std::atomic<bool> is_running_{false};
 

@@ -23,6 +23,7 @@
 
     <string name="ime_toast_no_server">Configure o PC no app Zenith Audio</string>
     <string name="ime_toast_no_permission">Conceda a permissão de microfone ao Zenith Audio</string>
+    <string name="mic_requires_stream">Conecte ao PC antes de ligar o microfone</string>
     <string name="ime_toast_cancelled">Ditado cancelado</string>
     <string name="ime_toast_no_field">Campo de texto indisponível — texto descartado</string>
 
