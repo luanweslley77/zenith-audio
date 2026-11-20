@@ -146,12 +146,19 @@ A search of the Hex and transcribe.cpp GitHub issues and PRs found **no merged i
 | Hex | [#449](https://github.com/anomalyco/hex/issues/449) Live transcript preview | open | UI preview; related. |
 | Hex | [#957](https://github.com/anomalyco/hex/issues/957) Client-only / server-only modes over LAN or Tailscale | open | Remote transcription. Aligns with the phone→PC direction, but it is a desktop-client proposal and has no implementation. |
 | Hex | [PR #1474](https://github.com/anomalyco/hex/pull/1474) `/dictations` partials | merged | Live text over SSE, but only when the engine's model can stream. |
-| transcribe.cpp | [#252](https://github.com/handy-computer/transcribe.cpp/issues/252) Parakeet v3 loses text on clips of some lengths | open | Batch blocker; reproduced below. |
+| transcribe.cpp | [#252](https://github.com/handy-computer/transcribe.cpp/issues/252) Parakeet v3 loses text on clips of some lengths | **fixed** 2026-11-11 (v0.4.2), carried by Hex 2026-11-20 | Batch blocker while it lasted; mechanism and measurement in §2.6. |
 | transcribe.cpp | [#215](https://github.com/handy-computer/transcribe.cpp/issues/215) Parakeet streaming commit freezes after a lone-space token | open | Streaming blocker; a fix is offered but not merged. |
 
 Consequence: the **final** transcription is batch — the only path that works today with the best pt-BR model. Live text for this model is implemented in the bridge (v1, §6.7), not enabled by a Hex flag.
 
-### 2.6 The batch blocker: transcribe.cpp #252
+### 2.6 The batch blocker: transcribe.cpp #252 — resolved
+
+> **Resolved.** `handy-computer/transcribe.cpp` `869f03bc` (v0.4.2, 2026-11-11)
+> drops the padding frame before the encoder; Hex picked it up on 2026-11-20
+> by cherry-picking it onto its pinned fork (`anomalyco/hex` #2076), so `dev`
+> now pins `60bed89`. The patch in this repository is archived under
+> `docs/patches/archive/` and **must not be reapplied**: two fixes would drop
+> two frames instead of one. What follows is the diagnosis as it was made.
 
 The **stock Parakeet v3** and the **`-30s` fine-tune** both inherit a length-dependent failure: when the mel frame count is `8k + 1`, the encoder sees one frame past the end of the speech. Roughly one length in eight is affected. Reproduced with Hex 3.3.0 and the stock v3 Q8_0:
 
@@ -170,7 +177,7 @@ The obvious mask-length change is not enough: `pre_encode_stage_lengths` is only
 2. compact the row-major mel buffer from `[n_mels, mel_frames]` to `[n_mels, graph_mel_frames]`;
 3. build the encoder graph with `graph_mel_frames`, upload the compacted buffer, and pass `graph_mel_frames` to the length masks.
 
-The local patch is [`docs/patches/transcribe-cpp-252-compact-last-mel-frame.patch`](patches/transcribe-cpp-252-compact-last-mel-frame.patch); it touches `run_one_shot_inner` in `src/arch/parakeet/model.cpp`. It drops the last mel frame from the encoder graph, which is what NeMo does. Validated with the patched `transcribe-cli` and with Hex 3.3.0 built against the patched checkout:
+The local patch was [`docs/patches/archive/transcribe-cpp-252-compact-last-mel-frame.patch`](patches/archive/transcribe-cpp-252-compact-last-mel-frame.patch); it touched `run_one_shot_inner` in `src/arch/parakeet/model.cpp`. It drops the last mel frame from the encoder graph, which is what NeMo does. Validated with the patched `transcribe-cli` and with Hex 3.3.0 built against the patched checkout:
 
 ```text
 clip 5.04 s              → "By no possible supposition could this stranger, Fitzroy Simpson, have caused"
@@ -180,7 +187,9 @@ FLEURS pt-BR reference   → unchanged (exact match)
 
 Hex 3.3.0, rebuilt against the patched checkout, produces the same outputs; the trim workaround is no longer needed. The patch changes the stock v3 numbers slightly (FLEURS 5.36 → 5.45%, TAGARELA 21.31 → 21.72%) while removing the empty/truncated failures; the `-30s` and Whisper results are unchanged. The purpose is reliability, not a WER gain.
 
-Hex pins `anomalyco/transcribe.cpp` at rev `2778ae4`, which carries the same bug. A batch pipeline **must** include this fix (or a padding workaround that avoids `mel_frames % 8 == 1`); without it, dictation randomly returns empty or truncated text. The patch is local to the Hex build; upstreaming it to transcribe.cpp #252 is the durable fix.
+Hex used to pin `anomalyco/transcribe.cpp` at rev `2778ae4`, which carried the same extra frame. That is history: the pin is now `60bed89`, one cherry-pick ahead, and a batch pipeline needs nothing extra.
+
+One correction to the diagnosis above, measured on 2026-11-20 while retiring the patch. The extra frame is deterministic — at 80,640 samples an unfixed build reports `T_enc=64` and a fixed one `T_enc=63`, in `transcribe-cli`, with the same `run_one_shot_inner` path. The **symptom** is not: 50 FLEURS clips cut to 80,640 samples all transcribed correctly on the unfixed build, and 80,640 vs 80,639 produced identical text on the NeMo sample. So the frame was always there, and whether it emptied or cut a transcript depended on the audio. Treat "one length in eight" as how often the frame appears, not how often dictation fails.
 
 ---
 
@@ -782,7 +791,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 | Path | Responsibility |
 |---|---|
 | `docs/phone-dictation.md` | This document |
-| `docs/patches/transcribe-cpp-252-compact-last-mel-frame.patch` | Local fix for the Parakeet v3 batch bug |
+| `docs/patches/archive/transcribe-cpp-252-compact-last-mel-frame.patch` | Archived local fix for the Parakeet v3 batch bug (obsolete: the fix is upstream) |
 | `bridge/README.md` | Bridge usage, protocol and test instructions |
 | `bridge/package.json` | Bun project, `@kitlangton/hex` dependency |
 | `bridge/src/index.ts` | Flags, startup, shutdown |
@@ -814,7 +823,7 @@ behaviour of each app, and concurrent capture with the streaming service.
 
 ## 14. Decision log
 
-- **Batch final, live preview.** The final always transcribes the whole utterance; live text is a series of tentative tail passes. This avoids chunk joins while giving text during speech. The final requires the local #252 patch, now validated in Hex; upstreaming is pending.
+- **Batch final, live preview.** The final always transcribes the whole utterance; live text is a series of tentative tail passes. This avoids chunk joins while giving text during speech. The final needed the local #252 patch until 2026-11-20, when the fix reached Hex's pin; nothing is required now.
 - **The bridge protocol carries partials now.** `PARTIAL` (0x04) is implemented; the client replaces previews and commits only `RESULT`.
 - **TCP for dictation.** Reliability and ordering matter more than milliseconds when the payload is a sentence.
 - **Half-close after END is supported.** Node's default `allowHalfOpen: false` closes the bridge's write side as soon as the client's FIN arrives, which lost the RESULT; the bridge now keeps writing until it has replied, and treats a half-close without END as a cancel.

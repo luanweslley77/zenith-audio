@@ -2,6 +2,10 @@
 
 - **Status:** Accepted for v1
 - **Date:** 2026-11-08
+- **Update 2026-11-20:** the reversal trigger "the #252 fix lands upstream"
+  fired. `handy-computer/transcribe.cpp` `869f03bc` (v0.4.2, 2026-11-11) and
+  Hex's pin `60bed89` (2026-11-20, `anomalyco/hex` #2076) carry it. The patch
+  is archived and must not be reapplied.
 - **Deciders:** Luan, OpenCode
 - **Related:** [`../phone-dictation.md`](../phone-dictation.md),
   [`../../bridge/README.md`](../../bridge/README.md),
@@ -56,10 +60,11 @@ transcriber.transcribe(wav); // batch, called repeatedly for previews
 ```
 
 Hex's source is **not** modified. The engine fix for transcribe.cpp
-[#252](https://github.com/handy-computer/transcribe.cpp/issues/252) is kept in
-the transcribe.cpp dependency, with a durable patch file in this repository
-([`../patches/transcribe-cpp-252-compact-last-mel-frame.patch`](../patches/transcribe-cpp-252-compact-last-mel-frame.patch)).
-That patch is about text reliability, not streaming.
+[#252](https://github.com/handy-computer/transcribe.cpp/issues/252) used to be
+kept in the transcribe.cpp dependency, with a patch file in this repository
+(now [`../patches/archive/transcribe-cpp-252-compact-last-mel-frame.patch`](../patches/archive/transcribe-cpp-252-compact-last-mel-frame.patch)).
+That patch was about text reliability, not streaming, and the fix is now
+upstream and in Hex's pin.
 
 ## Consequences
 
@@ -83,8 +88,9 @@ That patch is about text reliability, not streaming.
   `hex service --embedded`; an SDK change can break it.
 - **Duplicated feature.** If Hex implements chunked/live, the bridge's tail
   loop becomes migration debt.
-- **Local engine patch.** The #252 fix lives in a Cargo git checkout and must
-  be reapplied if the pinned revision changes.
+- **Local engine patch (resolved 2026-11-20).** The #252 fix used to live in a
+  Cargo git checkout and had to be reapplied when the pin changed. It is in the
+  pinned revision now, so there is nothing to reapply.
 - **Machine-local model id.** `custom-<hash>` must be regenerated on another
   machine.
 
@@ -114,7 +120,8 @@ This decision should be revisited when any of these becomes true:
 4. **Repeated inference becomes material** (battery, GPU load, fan noise).
    Reduce stride/window, or move to native/chunked.
 5. **The SDK or the embedded service changes in a breaking way.**
-6. **The #252 fix lands upstream.** Drop the local transcribe.cpp patch.
+6. **The #252 fix lands upstream.** *(Happened 2026-11-11; the local patch is
+   archived and Hex's pin carries the fix.)*
 
 ## References
 
